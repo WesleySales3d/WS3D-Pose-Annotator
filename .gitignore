@@ -1,0 +1,35 @@
+# Ambiente virtual
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Build / dist
+build/
+dist/
+
+# Logs
+*.log
+
+# IDEs
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Cache geral
+.cache/
+
+# FFmpeg temporários (se usar)
+*.tmp
+*.temp
+
+# Anotações / exports (opcional, ajuste se quiser versionar)
+#exports/
+#output/
