@@ -1,4 +1,4 @@
-"""COCO keypoints export helpers."""
+﻿"""COCO keypoints export helpers."""
 
 from __future__ import annotations
 
@@ -44,6 +44,8 @@ def export_coco_dataset(
     image_id = 1
 
     for item in project.items:
+        if not item.include_in_export:
+            continue
         manager = video_managers.get(item.item_id)
         if manager is None:
             continue

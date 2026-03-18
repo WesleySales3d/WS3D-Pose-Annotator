@@ -1,9 +1,25 @@
-# Changelog
+﻿# Changelog
 
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [1.2] - 2026-03-18
+
+### Added
+- Per-item project row actions to exclude items from dataset export or remove them from the project.
+- Item-specific zoom and pan state persistence when switching between imported media.
+- New `center_shoulder` and optional `trunk_center` keypoints for the `POSE23` preset.
+- Automatic migration for legacy `POSE23` projects that still stored inner shoulder pairs.
+
+### Changed
+- Project schema version bumped to preserve compatibility with older shoulder layouts.
+- Window title now prioritizes the project name while the application name stays only in the app caption.
+- Project item panel became resizable and now shows the total number of annotated frames across the whole project.
+- Keypoint table layout was tightened horizontally, and display settings moved beside the keypoint list.
+- Keypoint marker size now scales proportionally with media resolution, with minimum size `1`.
+- Consolidated project exports now honor the per-item `include_in_export` toggle.
 
 ## [1.1] - 2026-03-18
 

@@ -1,4 +1,4 @@
-"""Project persistence model."""
+﻿"""Project persistence model."""
 
 from __future__ import annotations
 
@@ -7,7 +7,66 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .annotation_model import FrameAnnotation
+from .annotation_model import FrameAnnotation, KeypointState
+
+
+def _migrate_center_shoulder(left: KeypointState, right: KeypointState) -> KeypointState:
+    candidates = [state for state in (left, right) if state.v > 0]
+    if len(candidates) == 2:
+        return KeypointState(
+            x=(left.x + right.x) / 2,
+            y=(left.y + right.y) / 2,
+            v=2 if left.v == 2 or right.v == 2 else 1,
+            contact=None,
+        )
+    if len(candidates) == 1 and candidates[0].v == 2:
+        return KeypointState(x=candidates[0].x, y=candidates[0].y, v=2, contact=None)
+    return KeypointState()
+
+
+def _migrate_pose23_annotation(annotation: FrameAnnotation) -> FrameAnnotation:
+    if len(annotation.keypoints) != 23:
+        return annotation
+    old = annotation.keypoints
+    return FrameAnnotation(
+        frame_index=annotation.frame_index,
+        timestamp=annotation.timestamp,
+        width=annotation.width,
+        height=annotation.height,
+        keypoints=[
+            old[0].clone(),
+            old[1].clone(),
+            old[2].clone(),
+            old[3].clone(),
+            old[4].clone(),
+            _migrate_center_shoulder(old[5], old[7]),
+            old[6].clone(),
+            old[8].clone(),
+            old[9].clone(),
+            old[10].clone(),
+            old[11].clone(),
+            old[12].clone(),
+            KeypointState(),
+            old[13].clone(),
+            old[14].clone(),
+            old[15].clone(),
+            old[16].clone(),
+            old[17].clone(),
+            old[18].clone(),
+            old[19].clone(),
+            old[20].clone(),
+            old[21].clone(),
+            old[22].clone(),
+        ],
+    )
+
+
+def _migrate_pose23_item(item: "ProjectItemData") -> "ProjectItemData":
+    item.annotations = {
+        frame_index: _migrate_pose23_annotation(annotation)
+        for frame_index, annotation in item.annotations.items()
+    }
+    return item
 
 
 @dataclass
@@ -52,6 +111,7 @@ class ProjectItemData:
     media_path: str
     media_metadata: VideoMetadata
     media_kind: str
+    include_in_export: bool = True
     annotations: dict[int, FrameAnnotation] = field(default_factory=dict)
     visited_frames: set[int] = field(default_factory=set)
     cache_dir: str | None = None
@@ -74,6 +134,7 @@ class ProjectItemData:
             media_path=resolved,
             media_metadata=media_metadata,
             media_kind=media_kind,
+            include_in_export=True,
             cache_dir=cache_dir,
         )
 
@@ -93,6 +154,7 @@ class ProjectItemData:
             "name": self.name,
             "media_path": self.media_path,
             "media_kind": self.media_kind,
+            "include_in_export": self.include_in_export,
             "media_metadata": self.media_metadata.to_dict(),
             "annotations": {
                 str(frame_index): annotation.to_dict()
@@ -110,6 +172,7 @@ class ProjectItemData:
             media_path=str(data["media_path"]),
             media_metadata=VideoMetadata.from_dict(data["media_metadata"]),
             media_kind=str(data.get("media_kind", "video")),
+            include_in_export=bool(data.get("include_in_export", True)),
             cache_dir=data.get("cache_dir"),
         )
         item.annotations = {
@@ -124,14 +187,14 @@ class ProjectItemData:
 class ProjectData:
     """All persisted application state."""
 
-    version: int = 2
+    version: int = 4
     skeleton_name: str = "POSE23"
     items: list[ProjectItemData] = field(default_factory=list)
     active_item_id: str | None = None
     ui_state: dict = field(default_factory=dict)
 
     def reset(self) -> None:
-        self.version = 2
+        self.version = 4
         self.skeleton_name = "POSE23"
         self.items.clear()
         self.active_item_id = None
@@ -197,6 +260,16 @@ class ProjectData:
         if merged_items and not self.active_item_id:
             self.active_item_id = merged_items[0].item_id
         return merged_items
+
+    def remove_item(self, item_id: str) -> ProjectItemData | None:
+        for index, item in enumerate(self.items):
+            if item.item_id != item_id:
+                continue
+            removed = self.items.pop(index)
+            if self.active_item_id == item_id:
+                self.active_item_id = self.items[min(index, len(self.items) - 1)].item_id if self.items else None
+            return removed
+        return None
 
     @property
     def video_path(self) -> str | None:
@@ -266,13 +339,16 @@ class ProjectData:
     @classmethod
     def from_dict(cls, data: dict) -> "ProjectData":
         if "items" in data:
+            version = int(data.get("version", 2))
             project = cls(
-                version=int(data.get("version", 2)),
+                version=version,
                 skeleton_name=str(data.get("skeleton_name", "POSE23")),
                 active_item_id=data.get("active_item_id"),
                 ui_state=dict(data.get("ui_state", {})),
             )
             project.items = [ProjectItemData.from_dict(item_data) for item_data in data.get("items", [])]
+            if version < 4 and project.skeleton_name == "POSE23":
+                project.items = [_migrate_pose23_item(item) for item in project.items]
             if not project.active_item_id and project.items:
                 project.active_item_id = project.items[0].item_id
             return project
@@ -298,6 +374,8 @@ class ProjectData:
                 for frame_index, annotation in data.get("annotations", {}).items()
             }
             item.visited_frames = {int(frame_index) for frame_index in data.get("visited_frames", [])}
+            if project.skeleton_name == "POSE23":
+                item = _migrate_pose23_item(item)
             project.add_item(item)
         return project
 
@@ -314,3 +392,4 @@ class ProjectData:
         project_path = Path(path)
         data = json.loads(project_path.read_text(encoding="utf-8"))
         return cls.from_dict(data)
+

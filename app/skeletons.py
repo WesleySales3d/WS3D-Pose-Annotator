@@ -1,4 +1,4 @@
-"""Skeleton preset definitions."""
+﻿"""Skeleton preset definitions."""
 
 from __future__ import annotations
 
@@ -36,14 +36,14 @@ POSE23 = SkeletonDefinition(
         "right_eye",
         "left_ear",
         "right_ear",
-        "left_shoulder_inner",
+        "center_shoulder",
         "left_shoulder_outer",
-        "right_shoulder_inner",
         "right_shoulder_outer",
         "left_elbow",
         "right_elbow",
         "left_wrist",
         "right_wrist",
+        "trunk_center",
         "left_hip",
         "right_hip",
         "left_knee",
@@ -60,13 +60,15 @@ POSE23 = SkeletonDefinition(
         (0, 2),
         (1, 3),
         (2, 4),
-        (5, 7),
         (5, 6),
-        (7, 8),
-        (6, 9),
-        (9, 11),
+        (5, 7),
+        (6, 8),
         (8, 10),
-        (10, 12),
+        (7, 9),
+        (9, 11),
+        (5, 12),
+        (12, 13),
+        (12, 14),
         (13, 14),
         (13, 15),
         (15, 17),
@@ -78,10 +80,6 @@ POSE23 = SkeletonDefinition(
         (18, 20),
         (18, 22),
         (20, 22),
-    ],
-    bridge_connections=[
-        ((5, 6), 13),
-        ((7, 8), 14),
     ],
     contact_keypoints={"left_heel", "right_heel", "left_toe_center", "right_toe_center"},
 )

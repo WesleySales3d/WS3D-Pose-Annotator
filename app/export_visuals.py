@@ -1,4 +1,4 @@
-"""Export rendered annotation overlays as image sequences or video."""
+﻿"""Export rendered annotation overlays as image sequences or video."""
 
 from __future__ import annotations
 
@@ -21,6 +21,12 @@ def _keypoint_color(visibility_value: int) -> QColor:
     if visibility_value == 1:
         return QColor("#ffd166")
     return QColor("#8f949e")
+
+
+def _effective_point_radius(width: int, height: int, point_radius: float) -> float:
+    min_dimension = max(1, min(width, height))
+    scale_factor = min(3.0, max(0.25, min_dimension / 1080.0))
+    return max(1.0, point_radius * scale_factor)
 
 
 def render_annotation_image(
@@ -50,6 +56,8 @@ def render_annotation_image(
 
     if not include_annotations:
         return image
+
+    effective_point_radius = _effective_point_radius(width, height, point_radius)
 
     painter = QPainter(image)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
@@ -92,14 +100,14 @@ def render_annotation_image(
         painter.setBrush(_keypoint_color(state.v))
         painter.drawEllipse(
             QRectF(
-                state.x - point_radius,
-                state.y - point_radius,
-                point_radius * 2,
-                point_radius * 2,
+                state.x - effective_point_radius,
+                state.y - effective_point_radius,
+                effective_point_radius * 2,
+                effective_point_radius * 2,
             )
         )
         if state.contact:
-            inner_radius = max(2.0, point_radius * 0.55)
+            inner_radius = max(2.0, effective_point_radius * 0.55)
             painter.setPen(QPen(QColor("#00f5a0"), 2.0))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(
@@ -112,7 +120,10 @@ def render_annotation_image(
             )
         if show_labels:
             painter.setPen(QColor("#f2f2f2"))
-            painter.drawText(QPointF(state.x + point_radius + 4, state.y - point_radius - 2), name)
+            painter.drawText(
+                QPointF(state.x + effective_point_radius + 4, state.y - effective_point_radius - 2),
+                name,
+            )
 
     painter.end()
     return image

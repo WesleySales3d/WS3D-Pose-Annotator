@@ -1,10 +1,10 @@
-"""Annotation canvas based on QGraphicsView."""
+﻿"""Annotation canvas based on QGraphicsView."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, Qt, Signal
+from PySide6.QtCore import QPoint, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QMouseEvent, QPen, QPixmap, QWheelEvent
 from PySide6.QtWidgets import QGraphicsLineItem, QGraphicsPixmapItem, QGraphicsScene, QGraphicsView
 
@@ -53,6 +53,8 @@ class AnnotationCanvas(QGraphicsView):
         self._is_syncing = False
         self._show_frame_layer = True
         self._show_annotation_layer = True
+        self._image_width = 1
+        self._image_height = 1
 
     def set_skeleton(self, skeleton: SkeletonDefinition) -> None:
         self._skeleton = skeleton
@@ -81,7 +83,7 @@ class AnnotationCanvas(QGraphicsView):
             self._bridge_line_items.append(((shoulder_pair, hip_index), line_item))
 
         for index, name in enumerate(skeleton.keypoints):
-            item = KeypointItem(index=index, name=name, radius=self._point_radius)
+            item = KeypointItem(index=index, name=name, radius=self._effective_point_radius())
             item.set_show_label(self._show_labels)
             item.moved.connect(self._on_item_moved)
             item.selected.connect(self._on_item_selected)
@@ -91,22 +93,53 @@ class AnnotationCanvas(QGraphicsView):
             self._keypoint_items.append(item)
         self.set_active_keypoint(0)
         self.set_layer_visibility(self._show_frame_layer, self._show_annotation_layer)
+        self._update_point_radii()
 
     def set_frame_image(self, image_path: str | Path) -> None:
         pixmap = QPixmap(str(image_path))
         self._pixmap_item.setPixmap(pixmap)
         self._scene.setSceneRect(self._pixmap_item.boundingRect())
         self._pixmap_item.setVisible(self._show_frame_layer)
+        self._image_width = max(1, pixmap.width())
+        self._image_height = max(1, pixmap.height())
+        self._update_point_radii()
         self._update_lines()
 
     def clear_image(self) -> None:
         self._pixmap_item.setPixmap(QPixmap())
         self._scene.setSceneRect(self._pixmap_item.boundingRect())
+        self._image_width = 1
+        self._image_height = 1
+        self._update_point_radii()
         self._update_lines()
 
     def fit_content(self) -> None:
         if not self._pixmap_item.pixmap().isNull():
             self.fitInView(self._pixmap_item, Qt.AspectRatioMode.KeepAspectRatio)
+
+    def capture_view_state(self) -> dict[str, float | int]:
+        return {
+            "scale": round(self.transform().m11(), 6),
+            "h": int(self.horizontalScrollBar().value()),
+            "v": int(self.verticalScrollBar().value()),
+        }
+
+    def restore_view_state(self, state: dict | None) -> None:
+        if not state:
+            self.fit_content()
+            return
+        scale = float(state.get("scale", 1.0) or 1.0)
+        h_value = int(state.get("h", 0) or 0)
+        v_value = int(state.get("v", 0) or 0)
+        self.resetTransform()
+        if scale > 0:
+            self.scale(scale, scale)
+
+        def _apply_scrollbars() -> None:
+            self.horizontalScrollBar().setValue(h_value)
+            self.verticalScrollBar().setValue(v_value)
+
+        QTimer.singleShot(0, _apply_scrollbars)
 
     def set_annotation(self, annotation: FrameAnnotation) -> None:
         self._is_syncing = True
@@ -136,11 +169,20 @@ class AnnotationCanvas(QGraphicsView):
             item.set_show_label(show_labels)
         self.viewport().update()
 
-    def set_point_radius(self, radius: float) -> None:
-        self._point_radius = radius
+    def _effective_point_radius(self) -> float:
+        min_dimension = max(1, min(self._image_width, self._image_height))
+        scale_factor = min(3.0, max(0.25, min_dimension / 1080.0))
+        return max(1.0, self._point_radius * scale_factor)
+
+    def _update_point_radii(self) -> None:
+        effective_radius = self._effective_point_radius()
         for item in self._keypoint_items:
-            item.set_radius(radius)
+            item.set_radius(effective_radius)
         self.viewport().update()
+
+    def set_point_radius(self, radius: float) -> None:
+        self._point_radius = max(1.0, radius)
+        self._update_point_radii()
 
     def set_line_width(self, line_width: float) -> None:
         self._line_width = line_width

@@ -5,7 +5,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, QSignalBlocker, QTimer, Qt, QSize
+from PySide6.QtCore import QSettings, QSignalBlocker, QTimer, Qt, QSize, Signal
 from PySide6.QtGui import QAction, QBrush, QCloseEvent, QColor, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -238,12 +238,79 @@ class ExportVisualDialog(QDialog):
         )
 
 
+class ProjectItemListRow(QWidget):
+    """Visual row used in the project-items list."""
+
+    clicked = Signal(str)
+    toggle_export_requested = Signal(str)
+    delete_requested = Signal(str)
+
+    def __init__(self, item: ProjectItemData, label_text: str, icon_provider, parent=None) -> None:
+        super().__init__(parent)
+        self._item_id = item.item_id
+        self._icon_provider = icon_provider
+
+        self.setObjectName("projectItemRow")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        self.kind_label = QLabel("IMG" if item.media_kind == "image" else "VID")
+        self.kind_label.setMinimumWidth(36)
+        self.kind_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.kind_label.setProperty("role", "muted")
+
+        self.text_label = QLabel()
+        self.text_label.setWordWrap(True)
+
+        self.export_button = QToolButton()
+        self.export_button.setAutoRaise(True)
+        self.export_button.setIconSize(QSize(18, 18))
+        self.export_button.clicked.connect(lambda: self.toggle_export_requested.emit(self._item_id))
+
+        self.delete_button = QToolButton()
+        self.delete_button.setAutoRaise(True)
+        self.delete_button.setIconSize(QSize(18, 18))
+        self.delete_button.setIcon(self._icon_provider("delete_item.svg"))
+        self.delete_button.setToolTip("Excluir item do projeto")
+        self.delete_button.clicked.connect(lambda: self.delete_requested.emit(self._item_id))
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(6, 4, 6, 4)
+        layout.setSpacing(6)
+        layout.addWidget(self.kind_label)
+        layout.addWidget(self.text_label, 1)
+        layout.addWidget(self.export_button)
+        layout.addWidget(self.delete_button)
+
+        self.refresh(item, label_text, active=False)
+
+    def refresh(self, item: ProjectItemData, label_text: str, *, active: bool) -> None:
+        self._item_id = item.item_id
+        self.kind_label.setText("IMG" if item.media_kind == "image" else "VID")
+        self.text_label.setText(label_text)
+        included = item.include_in_export
+        self.export_button.setIcon(self._icon_provider("export_on.svg" if included else "export_off.svg"))
+        self.export_button.setToolTip("Excluir da exportação" if included else "Incluir na exportação")
+        text_color = "#f4f4f1" if included else "#9aa2b1"
+        border_color = "#5c7ea3" if active else "transparent"
+        background = "rgba(72, 102, 129, 0.35)" if active else "rgba(255, 255, 255, 0.02)"
+        self.setStyleSheet(
+            f"#projectItemRow {{ border: 1px solid {border_color}; border-radius: 6px; background: {background}; }}"
+            f"#projectItemRow QLabel {{ color: {text_color}; }}"
+        )
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(self._item_id)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
 class MainWindow(QMainWindow):
     """Main application window."""
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle(APP_TITLE)
+        self.setWindowTitle("sem_projeto")
         self.resize(1680, 980)
 
         self.project = ProjectData(skeleton_name=POSE23.name)
@@ -321,22 +388,26 @@ class MainWindow(QMainWindow):
         self.keypoint_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.keypoint_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.keypoint_table.verticalHeader().setVisible(False)
+        self.keypoint_table.horizontalHeader().setStretchLastSection(False)
         self.keypoint_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        self.keypoint_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.keypoint_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.keypoint_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         self.keypoint_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         self.keypoint_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         self.keypoint_table.itemSelectionChanged.connect(self._on_table_selection_changed)
 
         self.project_items_list = QListWidget()
+        self.project_items_list.setSpacing(4)
         self.project_items_list.itemSelectionChanged.connect(self._on_project_item_selection_changed)
+        self.project_items_summary_label = QLabel("Itens: 0 | Frames anotados: 0")
+        self.project_items_summary_label.setProperty("role", "muted")
 
         self.show_labels_checkbox = QCheckBox("Mostrar labels")
         self.show_labels_checkbox.setChecked(True)
         self.show_labels_checkbox.toggled.connect(self._on_show_labels_toggled)
 
         self.point_radius_spin = NoWheelSpinBox()
-        self.point_radius_spin.setRange(4, 24)
+        self.point_radius_spin.setRange(1, 24)
         self.point_radius_spin.setValue(int(DEFAULT_POINT_RADIUS))
         self.point_radius_spin.valueChanged.connect(self._on_point_radius_changed)
 
@@ -368,6 +439,7 @@ class MainWindow(QMainWindow):
         items_box = QGroupBox("Itens do projeto")
         items_layout = QVBoxLayout(items_box)
         items_layout.addWidget(self.project_items_list, 1)
+        items_layout.addWidget(self.project_items_summary_label)
 
         inspector_box = QGroupBox("Keypoints")
         inspector_layout = QVBoxLayout(inspector_box)
@@ -377,17 +449,18 @@ class MainWindow(QMainWindow):
         inspector_hint.setProperty("role", "muted")
         inspector_layout.addWidget(inspector_hint)
 
-        upper_panel = QWidget()
-        upper_panel_layout = QVBoxLayout(upper_panel)
-        upper_panel_layout.setContentsMargins(0, 0, 0, 0)
-        upper_panel_layout.addWidget(items_box, 1)
-        upper_panel_layout.addWidget(inspector_box, 2)
-
         display_box = QGroupBox("Exibição")
+        display_box.setMaximumWidth(240)
         display_layout = QFormLayout(display_box)
         display_layout.addRow(self.show_labels_checkbox)
         display_layout.addRow("Tamanho do ponto", self.point_radius_spin)
         display_layout.addRow("Espessura da linha", self.line_width_spin)
+
+        inspector_splitter = QSplitter(Qt.Orientation.Horizontal)
+        inspector_splitter.addWidget(inspector_box)
+        inspector_splitter.addWidget(display_box)
+        inspector_splitter.setStretchFactor(0, 5)
+        inspector_splitter.setStretchFactor(1, 1)
 
         actions_box = QGroupBox("Ações do frame")
         actions_layout = QGridLayout(actions_box)
@@ -403,18 +476,18 @@ class MainWindow(QMainWindow):
         actions_layout.addWidget(self.interpolate_button, 1, 2)
         actions_layout.addWidget(self.undo_bulk_button, 1, 3)
 
-        lower_controls = QWidget()
-        lower_controls_layout = QVBoxLayout(lower_controls)
-        lower_controls_layout.setContentsMargins(0, 0, 0, 0)
-        lower_controls_layout.addWidget(display_box)
-        lower_controls_layout.addWidget(actions_box)
-        lower_controls_layout.addStretch(1)
+        details_panel = QWidget()
+        details_layout = QVBoxLayout(details_panel)
+        details_layout.setContentsMargins(0, 0, 0, 0)
+        details_layout.addWidget(inspector_splitter, 1)
+        details_layout.addWidget(actions_box)
 
         side_panel = QSplitter(Qt.Orientation.Vertical)
-        side_panel.addWidget(upper_panel)
-        side_panel.addWidget(lower_controls)
-        side_panel.setStretchFactor(0, 3)
-        side_panel.setStretchFactor(1, 2)
+        side_panel.addWidget(items_box)
+        side_panel.addWidget(details_panel)
+        side_panel.setStretchFactor(0, 2)
+        side_panel.setStretchFactor(1, 5)
+        side_panel.setSizes([240, 640])
 
         splitter = QSplitter()
         splitter.addWidget(canvas_host)
@@ -488,8 +561,8 @@ class MainWindow(QMainWindow):
 
     def _create_actions(self) -> None:
         file_menu = self.menuBar().addMenu("&Arquivo")
-        export_menu = self.menuBar().addMenu("&Exportar")
         edit_menu = self.menuBar().addMenu("&Editar")
+        export_menu = self.menuBar().addMenu("&Exportar")
         help_menu = self.menuBar().addMenu("A&juda")
 
         self.new_action = QAction("Novo Projeto", self)
@@ -656,23 +729,68 @@ class MainWindow(QMainWindow):
         return "image" if manager.is_still_image else "video"
 
     def _item_label(self, item: ProjectItemData) -> str:
-        prefix = "[IMG]" if item.media_kind == "image" else "[VID]"
-        annotated_frames = sum(1 for annotation in item.annotations.values() if annotation.num_keypoints() > 0)
-        return f"{prefix} {item.name} ({annotated_frames} anot.)"
+        kind = "Imagem" if item.media_kind == "image" else "Vídeo"
+        return f"{item.name}\n{kind}"
+
+    def _total_annotated_frames(self) -> int:
+        return sum(
+            1
+            for item in self.project.items
+            for annotation in item.annotations.values()
+            if annotation.num_keypoints() > 0
+        )
+
+    def _update_project_items_summary(self) -> None:
+        self.project_items_summary_label.setText(
+            f"Itens: {len(self.project.items)} | Frames anotados: {self._total_annotated_frames()}"
+        )
+
+    def _find_project_list_item(self, item_id: str) -> QListWidgetItem | None:
+        for row in range(self.project_items_list.count()):
+            widget_item = self.project_items_list.item(row)
+            if widget_item.data(Qt.ItemDataRole.UserRole) == item_id:
+                return widget_item
+        return None
+
+    def _select_project_item_by_id(self, item_id: str) -> None:
+        widget_item = self._find_project_list_item(item_id)
+        if widget_item is None:
+            return
+        self.project_items_list.setCurrentItem(widget_item)
+        if item_id != self.project.active_item_id:
+            self._activate_project_item(item_id)
 
     def _refresh_project_items_list(self) -> None:
         self.project_items_list.blockSignals(True)
         self.project_items_list.clear()
         active_item_id = self.project.active_item_id
         for item in self.project.items:
-            widget_item = QListWidgetItem(self._item_label(item))
+            widget_item = QListWidgetItem()
             widget_item.setData(Qt.ItemDataRole.UserRole, item.item_id)
+            row_widget = ProjectItemListRow(item, self._item_label(item), self._icon)
+            row_widget.refresh(item, self._item_label(item), active=item.item_id == active_item_id)
+            row_widget.clicked.connect(self._select_project_item_by_id)
+            row_widget.toggle_export_requested.connect(self._toggle_project_item_export)
+            row_widget.delete_requested.connect(self._delete_project_item)
+            widget_item.setSizeHint(row_widget.sizeHint())
             self.project_items_list.addItem(widget_item)
+            self.project_items_list.setItemWidget(widget_item, row_widget)
             if item.item_id == active_item_id:
                 self.project_items_list.setCurrentItem(widget_item)
         self.project_items_list.blockSignals(False)
+        self._update_project_items_summary()
+
+    def _store_active_item_view_state(self) -> None:
+        if not self.project.active_item_id or self.video_manager is None:
+            return
+        self.project.ui_state.setdefault("item_view_states", {})[self.project.active_item_id] = (
+            self.canvas.capture_view_state()
+        )
 
     def _activate_project_item(self, item_id: str, *, fit: bool = False) -> None:
+        current_item_id = self.project.active_item_id
+        if current_item_id and current_item_id != item_id:
+            self._store_active_item_view_state()
         item = self.project.get_item(item_id)
         manager = self.video_managers.get(item_id)
         if item is None or manager is None:
@@ -681,8 +799,11 @@ class MainWindow(QMainWindow):
         self.video_manager = manager
         last_frames = self.project.ui_state.setdefault("item_last_frames", {})
         target_frame = int(last_frames.get(item_id, min(item.annotations) if item.annotations else 0))
+        view_state = self.project.ui_state.get("item_view_states", {}).get(item_id)
         self._refresh_project_items_list()
-        self._load_frame(target_frame, fit=fit)
+        self._load_frame(target_frame, fit=fit or not bool(view_state))
+        if view_state:
+            self.canvas.restore_view_state(view_state)
 
     def _on_project_item_selection_changed(self) -> None:
         current_item = self.project_items_list.currentItem()
@@ -691,6 +812,70 @@ class MainWindow(QMainWindow):
         item_id = current_item.data(Qt.ItemDataRole.UserRole)
         if isinstance(item_id, str) and item_id != self.project.active_item_id:
             self._activate_project_item(item_id)
+
+    def _toggle_project_item_export(self, item_id: str) -> None:
+        item = self.project.get_item(item_id)
+        if item is None:
+            return
+        item.include_in_export = not item.include_in_export
+        self._refresh_project_items_list()
+        self._set_dirty()
+        self.statusBar().showMessage(
+            f"{'Incluído' if item.include_in_export else 'Excluído'} da exportação: {item.name}"
+        )
+
+    def _clear_media_panel(self) -> None:
+        self.video_manager = None
+        self.current_frame_index = 0
+        self.current_annotation = FrameAnnotation.empty(
+            0,
+            0.0,
+            1,
+            1,
+            self._current_skeleton().size,
+            contact_indices=self._current_skeleton().contact_indices,
+        )
+        self.canvas.clear_image()
+        self.canvas.set_annotation(self.current_annotation)
+        self.slider.setMaximum(0)
+        self.slider.setValue(0)
+        self.frame_info_label.setText("Frame 0 / 0")
+        self.timestamp_label.setText("00:00:00.000")
+        self.annotated_count_label.setText("Anotados: 0")
+        self._update_timeline_markers()
+        self._update_play_button_state()
+        self._update_annotation_navigation_buttons()
+
+    def _delete_project_item(self, item_id: str) -> None:
+        item = self.project.get_item(item_id)
+        if item is None:
+            return
+        reply = QMessageBox.question(
+            self,
+            "Excluir item",
+            f"Deseja remover '{item.name}' do projeto?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        removed = self.project.remove_item(item_id)
+        if removed is None:
+            return
+        manager = self.video_managers.pop(item_id, None)
+        if manager is not None:
+            manager.cleanup()
+        for state_key in ("item_last_frames", "item_view_states"):
+            state_map = self.project.ui_state.get(state_key)
+            if isinstance(state_map, dict):
+                state_map.pop(item_id, None)
+        self._refresh_project_items_list()
+        if self.project.active_item_id:
+            self._activate_project_item(self.project.active_item_id, fit=True)
+        else:
+            self._clear_media_panel()
+        self._set_dirty()
+        self.statusBar().showMessage(f"Item removido: {item.name}")
 
     def _register_media_item(self, manager: VideoManager, *, make_active: bool = True) -> ProjectItemData:
         item = self.project.add_media(
@@ -720,14 +905,14 @@ class MainWindow(QMainWindow):
             "right_eye",
             "left_ear",
             "right_ear",
-            "left_shoulder_inner",
-            "right_shoulder_inner",
+            "center_shoulder",
             "left_shoulder_outer",
             "right_shoulder_outer",
             "left_elbow",
             "right_elbow",
             "left_wrist",
             "right_wrist",
+            "trunk_center",
             "left_hip",
             "right_hip",
             "left_knee",
@@ -884,6 +1069,7 @@ class MainWindow(QMainWindow):
         self._update_layer_buttons()
 
     def _capture_ui_state(self) -> dict:
+        self._store_active_item_view_state()
         return {
             "show_labels": self.show_labels_checkbox.isChecked(),
             "point_radius": self.point_radius_spin.value(),
@@ -958,7 +1144,7 @@ class MainWindow(QMainWindow):
     def _refresh_window_title(self) -> None:
         suffix = "*" if self._dirty else ""
         project_name = Path(self.current_project_path).name if self.current_project_path else "sem_projeto"
-        self.setWindowTitle(f"{APP_TITLE} - {project_name}{suffix}")
+        self.setWindowTitle(f"{project_name}{suffix}")
 
     def _current_skeleton(self):
         return get_skeleton(self.project.skeleton_name)
@@ -1009,6 +1195,7 @@ class MainWindow(QMainWindow):
         if not metadata:
             self.frame_info_label.setText("Frame 0 / 0")
             self.timestamp_label.setText("00:00:00.000")
+            self.annotated_count_label.setText("Anotados: 0")
             return
         with QSignalBlocker(self.slider):
             self.slider.setMaximum(max(0, metadata.total_frames - 1))
@@ -1062,6 +1249,7 @@ class MainWindow(QMainWindow):
             self.project.remove_annotation(self.current_annotation.frame_index)
         self.project.ui_state = self._capture_ui_state()
         self._update_timeline_markers()
+        self._update_project_items_summary()
 
     def _goto_frame(self, frame_index: int) -> None:
         if not self.video_manager:
@@ -1774,3 +1962,18 @@ class MainWindow(QMainWindow):
         self._pause_video()
         self._cleanup_all_video_managers()
         event.accept()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

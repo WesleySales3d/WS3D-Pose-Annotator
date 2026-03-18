@@ -1,8 +1,8 @@
-# WS3D Pose Annotator
+﻿# WS3D Pose Annotator
 
 Desktop app for manual 2D human pose annotation on videos and images, built with `Python 3.11+` and `PySide6`, with `FFmpeg/ffprobe` used for media probing, frame extraction, and rendered exports.
 
-Current release: `v1.1`  
+Current release: `v1.2`  
 Version source: [VERSION](VERSION)  
 Release notes: [CHANGELOG.md](CHANGELOG.md)
 
@@ -23,6 +23,7 @@ With one project you can:
 
 - Desktop-native workflow with `PySide6`
 - Multi-item projects with videos and still images together
+- Per-item export toggles and delete actions directly in the project list
 - FFmpeg-backed frame extraction and export pipeline
 - Drag-and-drop keypoint creation from the keypoint list
 - Clickable timeline markers for annotated frames
@@ -39,6 +40,7 @@ With one project you can:
 - Import multiple videos and images into the same project
 - Switch active media in the project item list
 - Preserve annotations separately for each imported item
+- Toggle whether each item participates in dataset export
 - Merge older projects into the current project with `Arquivo > Mesclar Projeto`
 
 ### Annotation canvas
@@ -46,6 +48,7 @@ With one project you can:
 - Central canvas based on `QGraphicsView`
 - Draggable keypoints with live updates
 - Skeleton rendering with configurable point size and line width
+- Per-item zoom/pan persistence when switching media
 - Zoom with mouse wheel
 - Pan with `Space + drag` or middle mouse drag
 - Middle-button double click to reframe the media
@@ -61,7 +64,7 @@ With one project you can:
 
 ### Keypoint management
 
-- POSE23 preset included
+- POSE23 preset included with `center_shoulder` and optional `trunk_center`
 - Left/right grouping by body category in the keypoint list
 - Visibility states:
   - `0`: absent
@@ -118,7 +121,7 @@ python main.py
 ## Default Workflow
 
 1. Create a new project or open an existing one.
-2. Import media with `Arquivo > Abrir Vídeo` and `Arquivo > Abrir Imagem`.
+2. Import media with `Arquivo > Abrir VÃ­deo` and `Arquivo > Abrir Imagem`.
 3. Use the project item list to switch between imported videos and images.
 4. Move through frames using the bottom controls or keyboard shortcuts.
 5. Select a keypoint in the side panel.
@@ -155,6 +158,8 @@ Project files use:
 - extension: `*.poseproj.json`
 - multiple imported media items in the same project
 - one annotation timeline per imported item
+- per-item export include/exclude flag
+- per-item zoom/pan view state
 - active skeleton preset
 - item-specific annotations and visited frames
 - basic UI state
@@ -225,3 +230,6 @@ E:\MONOCAP\src
 - App version is stored in [VERSION](VERSION)
 - Release history is maintained in [CHANGELOG.md](CHANGELOG.md)
 - UI title is generated from the version file automatically
+
+
+

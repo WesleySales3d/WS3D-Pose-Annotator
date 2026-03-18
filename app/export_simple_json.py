@@ -1,4 +1,4 @@
-"""Simple JSON export helpers."""
+﻿"""Simple JSON export helpers."""
 
 from __future__ import annotations
 
@@ -17,6 +17,8 @@ def export_simple_json(project: ProjectData, skeleton: SkeletonDefinition, outpu
     items_payload = []
 
     for item in project.items:
+        if not item.include_in_export:
+            continue
         frames = []
         for frame_index in sorted(item.annotations):
             annotation = item.annotations[frame_index]
