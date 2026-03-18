@@ -2,35 +2,44 @@
 
 Desktop app for manual 2D human pose annotation on videos and images, built with `Python 3.11+` and `PySide6`, with `FFmpeg/ffprobe` used for media probing, frame extraction, and rendered exports.
 
-Current release: `v1.0.0`  
+Current release: `v1.1`  
 Version source: [VERSION](VERSION)  
 Release notes: [CHANGELOG.md](CHANGELOG.md)
 
 ## Overview
 
-`WS3D Pose Annotator` was designed for fast dataset creation and review workflows:
+`WS3D Pose Annotator` is a dataset-oriented annotation tool designed for projects that need more than a single clip per session.
 
-1. Open a video or image.
-2. Navigate frame by frame.
-3. Select a keypoint and place or drag it on the canvas.
-4. Set visibility and optional foot contact state.
-5. Save the project and continue later.
-6. Export annotations as COCO-style keypoints JSON, simple JSON, or rendered media previews.
+With one project you can:
+
+1. Import multiple videos and images.
+2. Switch between them in an item list similar to a layer stack.
+3. Annotate each item independently.
+4. Save everything in one project file.
+5. Merge older projects into the current project.
+6. Export the whole project as one organized dataset.
 
 ## Highlights
 
 - Desktop-native workflow with `PySide6`
-- Video and still-image support
+- Multi-item projects with videos and still images together
 - FFmpeg-backed frame extraction and export pipeline
 - Drag-and-drop keypoint creation from the keypoint list
 - Clickable timeline markers for annotated frames
 - Previous/next annotated-frame navigation
 - Undo and redo for keypoint edits
-- Project autosave and recent projects
+- Project autosave, recent projects, and project merge
 - COCO-style export plus custom simple JSON export
 - Rendered image/video export with annotations
 
 ## Main Features
+
+### Project item workflow
+
+- Import multiple videos and images into the same project
+- Switch active media in the project item list
+- Preserve annotations separately for each imported item
+- Merge older projects into the current project with `Arquivo > Mesclar Projeto`
 
 ### Annotation canvas
 
@@ -63,12 +72,13 @@ Release notes: [CHANGELOG.md](CHANGELOG.md)
 
 ### Persistence and export
 
-- Save and reopen annotation projects
+- Save and reopen multi-item annotation projects
 - Autosave support
 - Recent projects submenu
+- About dialog in `Ajuda > Sobre`
 - Export to:
-  - COCO-style keypoints JSON
-  - Simple JSON
+  - COCO-style keypoints JSON for the whole project
+  - Simple JSON for the whole project
   - Rendered PNG sequence
   - Rendered MP4 preview
   - Current frame image snapshot
@@ -107,13 +117,15 @@ python main.py
 
 ## Default Workflow
 
-1. Open a media file with `Arquivo > Abrir Vídeo` or `Arquivo > Abrir Imagem`.
-2. Move through frames using the bottom controls or keyboard shortcuts.
-3. Select a keypoint in the side panel.
-4. Double click on the canvas or drag from the keypoint list into the frame.
-5. Adjust visibility and contact state when needed.
-6. Save the project.
-7. Export your dataset in the desired format.
+1. Create a new project or open an existing one.
+2. Import media with `Arquivo > Abrir Vídeo` and `Arquivo > Abrir Imagem`.
+3. Use the project item list to switch between imported videos and images.
+4. Move through frames using the bottom controls or keyboard shortcuts.
+5. Select a keypoint in the side panel.
+6. Double click on the canvas or drag from the keypoint list into the frame.
+7. Adjust visibility and contact state when needed.
+8. Save the project or use `Arquivo > Mesclar Projeto` to bring in another project.
+9. Export the dataset in the desired format.
 
 ## Keyboard Shortcuts
 
@@ -141,13 +153,12 @@ Canvas shortcuts:
 Project files use:
 
 - extension: `*.poseproj.json`
-- media path reference
-- media metadata
+- multiple imported media items in the same project
+- one annotation timeline per imported item
 - active skeleton preset
-- annotations by frame
-- visited frames
+- item-specific annotations and visited frames
 - basic UI state
-- cache directory reference
+- cache directory reference per item
 
 ## Export Outputs
 
@@ -155,18 +166,31 @@ Project files use:
 
 Generates:
 
-- `images/frame_000123.png`
+- `images/*.png`
 - `annotations/instances_keypoints.json`
+
+The export traverses every imported item in the project and writes one consolidated dataset output.
 
 ### Simple JSON export
 
-Readable per-frame annotation export for debugging and custom pipelines.
+Readable multi-item annotation export for debugging and custom pipelines.
 
 ### Rendered preview export
 
 - PNG sequence with overlay
 - MP4 preview with overlay
 - annotations-only rendering mode
+
+## About
+
+Menu:
+
+- `Ajuda > Sobre`
+
+Author:
+
+- Wesley Sales
+- Social: `@wesleysales3d`
 
 ## Repository Structure
 

@@ -22,6 +22,8 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -44,7 +46,7 @@ from .export_visuals import export_visual_sequence, render_annotation_image
 from .ffmpeg_utils import FFmpegError
 from .history import HistoryEntry
 from .keypoint_table import KeypointTable
-from .project_model import ProjectData
+from .project_model import ProjectData, ProjectItemData
 from .settings import (
     APP_NAME,
     APP_TITLE,
@@ -246,6 +248,7 @@ class MainWindow(QMainWindow):
 
         self.project = ProjectData(skeleton_name=POSE23.name)
         self.video_manager: VideoManager | None = None
+        self.video_managers: dict[str, VideoManager] = {}
         self.current_project_path: str | None = None
         self.current_frame_index = 0
         self.current_annotation = FrameAnnotation.empty(
@@ -325,6 +328,9 @@ class MainWindow(QMainWindow):
         self.keypoint_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         self.keypoint_table.itemSelectionChanged.connect(self._on_table_selection_changed)
 
+        self.project_items_list = QListWidget()
+        self.project_items_list.itemSelectionChanged.connect(self._on_project_item_selection_changed)
+
         self.show_labels_checkbox = QCheckBox("Mostrar labels")
         self.show_labels_checkbox.setChecked(True)
         self.show_labels_checkbox.toggled.connect(self._on_show_labels_toggled)
@@ -359,6 +365,10 @@ class MainWindow(QMainWindow):
         self.undo_bulk_button.clicked.connect(self._undo)
         self.undo_bulk_button.setEnabled(False)
 
+        items_box = QGroupBox("Itens do projeto")
+        items_layout = QVBoxLayout(items_box)
+        items_layout.addWidget(self.project_items_list, 1)
+
         inspector_box = QGroupBox("Keypoints")
         inspector_layout = QVBoxLayout(inspector_box)
         inspector_layout.addWidget(self.keypoint_table, 1)
@@ -366,6 +376,12 @@ class MainWindow(QMainWindow):
         inspector_hint.setWordWrap(True)
         inspector_hint.setProperty("role", "muted")
         inspector_layout.addWidget(inspector_hint)
+
+        upper_panel = QWidget()
+        upper_panel_layout = QVBoxLayout(upper_panel)
+        upper_panel_layout.setContentsMargins(0, 0, 0, 0)
+        upper_panel_layout.addWidget(items_box, 1)
+        upper_panel_layout.addWidget(inspector_box, 2)
 
         display_box = QGroupBox("Exibição")
         display_layout = QFormLayout(display_box)
@@ -395,7 +411,7 @@ class MainWindow(QMainWindow):
         lower_controls_layout.addStretch(1)
 
         side_panel = QSplitter(Qt.Orientation.Vertical)
-        side_panel.addWidget(inspector_box)
+        side_panel.addWidget(upper_panel)
         side_panel.addWidget(lower_controls)
         side_panel.setStretchFactor(0, 3)
         side_panel.setStretchFactor(1, 2)
@@ -474,6 +490,7 @@ class MainWindow(QMainWindow):
         file_menu = self.menuBar().addMenu("&Arquivo")
         export_menu = self.menuBar().addMenu("&Exportar")
         edit_menu = self.menuBar().addMenu("&Editar")
+        help_menu = self.menuBar().addMenu("A&juda")
 
         self.new_action = QAction("Novo Projeto", self)
         self.new_action.setShortcut(QKeySequence.StandardKey.New)
@@ -497,6 +514,10 @@ class MainWindow(QMainWindow):
         self.save_project_as_action.setShortcut(QKeySequence.StandardKey.SaveAs)
         self.save_project_as_action.triggered.connect(self.save_project_as)
         file_menu.addAction(self.save_project_as_action)
+
+        self.merge_project_action = QAction("Mesclar Projeto", self)
+        self.merge_project_action.triggered.connect(self.merge_project)
+        file_menu.addAction(self.merge_project_action)
 
         file_menu.addSeparator()
         self.open_video_action = QAction("Abrir Vídeo", self)
@@ -537,6 +558,10 @@ class MainWindow(QMainWindow):
         self.redo_action.triggered.connect(self._redo)
         self.redo_action.setEnabled(False)
         edit_menu.addAction(self.redo_action)
+
+        self.about_action = QAction("Sobre", self)
+        self.about_action.triggered.connect(self.show_about_dialog)
+        help_menu.addAction(self.about_action)
 
     def _create_shortcuts(self) -> None:
         self._shortcuts: list[QShortcut] = []
@@ -620,6 +645,73 @@ class MainWindow(QMainWindow):
             self._show_error("Projeto recente", "O projeto selecionado não existe mais.")
             return
         self._load_project_file(path)
+
+    def _cleanup_all_video_managers(self) -> None:
+        for manager in self.video_managers.values():
+            manager.cleanup()
+        self.video_managers.clear()
+        self.video_manager = None
+
+    def _media_kind_from_manager(self, manager: VideoManager) -> str:
+        return "image" if manager.is_still_image else "video"
+
+    def _item_label(self, item: ProjectItemData) -> str:
+        prefix = "[IMG]" if item.media_kind == "image" else "[VID]"
+        annotated_frames = sum(1 for annotation in item.annotations.values() if annotation.num_keypoints() > 0)
+        return f"{prefix} {item.name} ({annotated_frames} anot.)"
+
+    def _refresh_project_items_list(self) -> None:
+        self.project_items_list.blockSignals(True)
+        self.project_items_list.clear()
+        active_item_id = self.project.active_item_id
+        for item in self.project.items:
+            widget_item = QListWidgetItem(self._item_label(item))
+            widget_item.setData(Qt.ItemDataRole.UserRole, item.item_id)
+            self.project_items_list.addItem(widget_item)
+            if item.item_id == active_item_id:
+                self.project_items_list.setCurrentItem(widget_item)
+        self.project_items_list.blockSignals(False)
+
+    def _activate_project_item(self, item_id: str, *, fit: bool = False) -> None:
+        item = self.project.get_item(item_id)
+        manager = self.video_managers.get(item_id)
+        if item is None or manager is None:
+            return
+        self.project.set_active_item(item_id)
+        self.video_manager = manager
+        last_frames = self.project.ui_state.setdefault("item_last_frames", {})
+        target_frame = int(last_frames.get(item_id, min(item.annotations) if item.annotations else 0))
+        self._refresh_project_items_list()
+        self._load_frame(target_frame, fit=fit)
+
+    def _on_project_item_selection_changed(self) -> None:
+        current_item = self.project_items_list.currentItem()
+        if current_item is None:
+            return
+        item_id = current_item.data(Qt.ItemDataRole.UserRole)
+        if isinstance(item_id, str) and item_id != self.project.active_item_id:
+            self._activate_project_item(item_id)
+
+    def _register_media_item(self, manager: VideoManager, *, make_active: bool = True) -> ProjectItemData:
+        item = self.project.add_media(
+            media_path=manager.video_path,
+            media_metadata=manager.metadata,
+            media_kind=self._media_kind_from_manager(manager),
+            cache_dir=str(manager.cache_dir),
+            make_active=make_active,
+        )
+        self.video_managers[item.item_id] = manager
+        self._refresh_project_items_list()
+        return item
+
+    def _sync_project_items_from_managers(self) -> None:
+        for item in self.project.items:
+            manager = self.video_managers.get(item.item_id)
+            if manager is None:
+                continue
+            item.media_path = manager.video_path
+            item.media_metadata = manager.metadata
+            item.cache_dir = str(manager.cache_dir)
 
     def _keypoint_display_order(self, skeleton) -> list[int]:
         preferred_names = [
@@ -896,6 +988,8 @@ class MainWindow(QMainWindow):
         frame_path = self.video_manager.get_frame_path(bounded)
         self.current_frame_index = bounded
         self.project.visited_frames.add(bounded)
+        if self.project.active_item_id:
+            self.project.ui_state.setdefault("item_last_frames", {})[self.project.active_item_id] = bounded
         self.current_annotation = self.project.get_annotation(bounded) or self._make_empty_annotation(bounded)
         self.canvas.set_frame_image(frame_path)
         self.canvas.set_annotation(self.current_annotation)
@@ -907,6 +1001,7 @@ class MainWindow(QMainWindow):
         self._update_slider_and_labels()
         self._update_timeline_markers()
         self._update_play_button_state()
+        self._refresh_project_items_list()
         self.statusBar().showMessage(f"Frame {bounded} carregado.")
 
     def _update_slider_and_labels(self) -> None:
@@ -1336,21 +1431,37 @@ class MainWindow(QMainWindow):
             return
         try:
             self.project.ui_state = self._capture_ui_state()
-            self.project.cache_dir = str(self.video_manager.cache_dir) if self.video_manager else None
+            self._sync_project_items_from_managers()
             self.project.save(self._autosave_path())
             self.statusBar().showMessage("Autosave atualizado.")
         except Exception as exc:
             self.statusBar().showMessage(f"Autosave falhou: {exc}")
 
     def _save_project_to(self, path: str) -> None:
-        self.project.video_path = self.video_manager.video_path if self.video_manager else self.project.video_path
-        self.project.cache_dir = str(self.video_manager.cache_dir) if self.video_manager else None
+        self._sync_project_items_from_managers()
         self.project.ui_state = self._capture_ui_state()
         self.project.save(path)
         self.current_project_path = path
         self._remember_recent_project(path)
         self._set_dirty(False)
         self.statusBar().showMessage(f"Projeto salvo em {path}")
+
+    def _resolve_project_item_paths(self, project: ProjectData) -> bool:
+        for item in project.items:
+            if Path(item.media_path).exists():
+                continue
+            resolved, _ = QFileDialog.getOpenFileName(
+                self,
+                f"Localizar mídia do item: {item.name}",
+                "",
+                SUPPORTED_MEDIA_FILTER,
+            )
+            if not resolved:
+                return False
+            item.media_path = resolved
+            if item.media_metadata:
+                item.media_metadata.video_path = resolved
+        return True
 
     def _confirm_discard_changes(self) -> bool:
         if not self._dirty:
@@ -1376,10 +1487,8 @@ class MainWindow(QMainWindow):
         self._undo_history.clear()
         self._redo_history.clear()
         self._update_history_actions()
-        if self.video_manager:
-            self.video_manager.cleanup()
+        self._cleanup_all_video_managers()
         self.project = ProjectData(skeleton_name=POSE23.name)
-        self.video_manager = None
         self.current_project_path = None
         self.current_frame_index = 0
         self.current_annotation = FrameAnnotation.empty(
@@ -1392,6 +1501,7 @@ class MainWindow(QMainWindow):
         )
         self.canvas.set_skeleton(POSE23)
         self.canvas.clear_image()
+        self._refresh_project_items_list()
         self._populate_keypoint_table()
         self.canvas.set_annotation(self.current_annotation)
         self.slider.setMaximum(0)
@@ -1409,47 +1519,36 @@ class MainWindow(QMainWindow):
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             self._pause_video()
-            if self.video_manager:
-                self.video_manager.cleanup()
-            self.video_manager = VideoManager.from_media_path(file_path)
-            self._undo_history.clear()
-            self._redo_history.clear()
-            self._update_history_actions()
-            self.project = ProjectData(
-                video_path=self.video_manager.video_path,
-                video_metadata=self.video_manager.metadata,
-                skeleton_name=POSE23.name,
-            )
-            self.current_project_path = None
+            manager = VideoManager.from_media_path(file_path)
+            item = self._register_media_item(manager, make_active=True)
+            self.video_manager = manager
             self.canvas.set_skeleton(self._current_skeleton())
             self._populate_keypoint_table()
-            self._load_frame(0, fit=True)
-            self._set_dirty(False)
-            self.statusBar().showMessage(f"{source_label} carregad{ 'a' if source_label == 'Imagem' else 'o' } com sucesso.")
+            self._activate_project_item(item.item_id, fit=True)
+            self._set_dirty(True)
+            self.statusBar().showMessage(
+                f"{source_label} importad{ 'a' if source_label == 'Imagem' else 'o' } para o projeto."
+            )
         except FFmpegError as exc:
             self._show_error(f"Erro ao abrir {source_label.lower()}", str(exc))
         finally:
             QApplication.restoreOverrideCursor()
 
     def open_video(self) -> None:
-        if not self._confirm_discard_changes():
-            return
         file_path, _ = QFileDialog.getOpenFileName(self, "Abrir vídeo", "", SUPPORTED_VIDEO_FILTER)
         if not file_path:
             return
         self._load_media_path(file_path, "Vídeo")
 
     def open_image(self) -> None:
-        if not self._confirm_discard_changes():
-            return
         file_path, _ = QFileDialog.getOpenFileName(self, "Abrir imagem", "", SUPPORTED_IMAGE_FILTER)
         if not file_path:
             return
         self._load_media_path(file_path, "Imagem")
 
     def save_project(self) -> bool:
-        if not self.project.video_metadata:
-            self._show_error("Salvar projeto", "Abra uma mídia antes de salvar o projeto.")
+        if not self.project.items:
+            self._show_error("Salvar projeto", "Importe ao menos uma mídia antes de salvar o projeto.")
             return False
         if not self.current_project_path:
             return self.save_project_as()
@@ -1461,8 +1560,8 @@ class MainWindow(QMainWindow):
             return False
 
     def save_project_as(self) -> bool:
-        if not self.project.video_metadata:
-            self._show_error("Salvar projeto", "Abra uma mídia antes de salvar o projeto.")
+        if not self.project.items:
+            self._show_error("Salvar projeto", "Importe ao menos uma mídia antes de salvar o projeto.")
             return False
         file_path, _ = QFileDialog.getSaveFileName(
             self,
@@ -1488,24 +1587,17 @@ class MainWindow(QMainWindow):
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             project = ProjectData.load(file_path)
-            if not project.video_path or not Path(project.video_path).exists():
-                resolved, _ = QFileDialog.getOpenFileName(
-                    self,
-                    "Localizar mídia do projeto",
-                    "",
-                    SUPPORTED_MEDIA_FILTER,
-                )
-                if not resolved:
-                    return
-                project.video_path = resolved
+            if not self._resolve_project_item_paths(project):
+                return
             self._pause_video()
-            if self.video_manager:
-                self.video_manager.cleanup()
-            self.video_manager = VideoManager(
-                video_path=project.video_path,
-                metadata=project.video_metadata,
-                cache_dir=project.cache_dir,
-            )
+            self._cleanup_all_video_managers()
+            for item in project.items:
+                manager = VideoManager(
+                    video_path=item.media_path,
+                    metadata=item.media_metadata,
+                    cache_dir=item.cache_dir,
+                )
+                self.video_managers[item.item_id] = manager
             self.project = project
             self._undo_history.clear()
             self._redo_history.clear()
@@ -1515,12 +1607,45 @@ class MainWindow(QMainWindow):
             self.canvas.set_skeleton(self._current_skeleton())
             self._populate_keypoint_table()
             self._apply_ui_state(self.project.ui_state)
-            first_frame = min(self.project.annotations) if self.project.annotations else 0
-            self._load_frame(first_frame, fit=True)
+            self._refresh_project_items_list()
+            if self.project.active_item_id:
+                self._activate_project_item(self.project.active_item_id, fit=True)
             self._set_dirty(False)
             self.statusBar().showMessage("Projeto reaberto com sucesso.")
         except Exception as exc:
             self._show_error("Erro ao abrir projeto", str(exc))
+        finally:
+            QApplication.restoreOverrideCursor()
+
+    def merge_project(self) -> None:
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Mesclar projeto",
+            "",
+            f"Projetos (*{PROJECT_EXTENSION})",
+        )
+        if not file_path:
+            return
+        try:
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            incoming = ProjectData.load(file_path)
+            if not self._resolve_project_item_paths(incoming):
+                return
+            merged_items = self.project.merge_project(incoming)
+            for item in merged_items:
+                manager = VideoManager(
+                    video_path=item.media_path,
+                    metadata=item.media_metadata,
+                    cache_dir=item.cache_dir,
+                )
+                self.video_managers[item.item_id] = manager
+            self._refresh_project_items_list()
+            if merged_items:
+                self._activate_project_item(merged_items[0].item_id, fit=True)
+            self._set_dirty(True)
+            self.statusBar().showMessage(f"Projeto mesclado com {len(merged_items)} item(ns).")
+        except Exception as exc:
+            self._show_error("Erro ao mesclar projeto", str(exc))
         finally:
             QApplication.restoreOverrideCursor()
 
@@ -1538,8 +1663,8 @@ class MainWindow(QMainWindow):
         self._load_project_file(file_path, confirm_discard=False)
 
     def export_coco(self) -> None:
-        if not self.video_manager or not self.project.video_metadata:
-            self._show_error("Exportar COCO", "Abra uma mídia ou projeto antes de exportar.")
+        if not self.project.items:
+            self._show_error("Exportar COCO", "Importe mídias para o projeto antes de exportar.")
             return
         dialog = ExportCocoDialog(self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -1548,15 +1673,11 @@ class MainWindow(QMainWindow):
         if not output_dir:
             self._show_error("Exportar COCO", "Selecione uma pasta de saída.")
             return
-        if mode == "annotated":
-            frame_indices = [
-                frame_index
-                for frame_index, annotation in sorted(self.project.annotations.items())
-                if annotation.num_keypoints() > 0
-            ]
-        else:
-            frame_indices = sorted(self.project.visited_frames)
-        if not frame_indices:
+        eligible_frames = any(
+            item.annotations if mode == "annotated" else item.visited_frames
+            for item in self.project.items
+        )
+        if not eligible_frames:
             self._show_error("Exportar COCO", "Não há frames elegíveis para exportação.")
             return
         try:
@@ -1564,9 +1685,9 @@ class MainWindow(QMainWindow):
             output_json = export_coco_dataset(
                 project=self.project,
                 skeleton=self._current_skeleton(),
-                video_manager=self.video_manager,
+                video_managers=self.video_managers,
                 output_dir=output_dir,
-                frame_indices=frame_indices,
+                mode=mode,
                 json_name=json_name,
             )
             self.statusBar().showMessage(f"COCO exportado em {output_json}")
@@ -1576,8 +1697,8 @@ class MainWindow(QMainWindow):
             QApplication.restoreOverrideCursor()
 
     def export_simple_json_file(self) -> None:
-        if not self.project.video_metadata:
-            self._show_error("Exportar JSON simples", "Abra uma mídia ou projeto antes de exportar.")
+        if not self.project.items:
+            self._show_error("Exportar JSON simples", "Importe mídias para o projeto antes de exportar.")
             return
         file_path, _ = QFileDialog.getSaveFileName(
             self,
@@ -1595,7 +1716,7 @@ class MainWindow(QMainWindow):
 
     def export_visual_preview(self) -> None:
         if not self.video_manager or not self.project.video_metadata:
-            self._show_error("Exportar sequência/vídeo", "Abra uma mídia ou projeto antes de exportar.")
+            self._show_error("Exportar sequência/vídeo", "Selecione um item do projeto antes de exportar.")
             return
         metadata = self.project.video_metadata
         dialog = ExportVisualDialog(metadata.total_frames, metadata.fps, self)
@@ -1634,11 +1755,22 @@ class MainWindow(QMainWindow):
     def _show_error(self, title: str, message: str) -> None:
         QMessageBox.critical(self, title, message)
 
+    def show_about_dialog(self) -> None:
+        QMessageBox.about(
+            self,
+            "Sobre",
+            (
+                f"{APP_TITLE}\n\n"
+                "Anotador desktop para poses 2D em videos e imagens.\n\n"
+                "Autor: Wesley Sales\n"
+                "Redes sociais: @wesleysales3d"
+            ),
+        )
+
     def closeEvent(self, event: QCloseEvent) -> None:
         if not self._confirm_discard_changes():
             event.ignore()
             return
         self._pause_video()
-        if self.video_manager:
-            self.video_manager.cleanup()
+        self._cleanup_all_video_managers()
         event.accept()
