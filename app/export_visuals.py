@@ -1,7 +1,8 @@
-﻿"""Export rendered annotation overlays as image sequences or video."""
+"""Export rendered annotation overlays as image sequences or video."""
 
 from __future__ import annotations
 
+import math
 import tempfile
 from pathlib import Path
 
@@ -27,6 +28,48 @@ def _effective_point_radius(width: int, height: int, point_radius: float) -> flo
     min_dimension = max(1, min(width, height))
     scale_factor = min(3.0, max(0.25, min_dimension / 1080.0))
     return max(1.0, point_radius * scale_factor)
+
+
+def _shoulder_midpoint(inner_x: float, inner_y: float, outer_x: float, outer_y: float) -> QPointF:
+    return QPointF((inner_x + outer_x) / 2.0, (inner_y + outer_y) / 2.0)
+
+
+def _normal_offset_break(
+    axis_start: QPointF,
+    axis_end: QPointF,
+    reference: QPointF,
+    anchor: QPointF,
+) -> QPointF:
+    dx = axis_end.x() - axis_start.x()
+    dy = axis_end.y() - axis_start.y()
+    length = math.hypot(dx, dy)
+    if length <= 1e-6:
+        return QPointF(anchor)
+    dir_x = dx / length
+    dir_y = dy / length
+    normal_x = -dir_y
+    normal_y = dir_x
+    ref_dx = reference.x() - axis_start.x()
+    ref_dy = reference.y() - axis_start.y()
+    perpendicular = ref_dx * normal_x + ref_dy * normal_y
+    if abs(perpendicular) <= 1e-6:
+        perpendicular = math.hypot(ref_dx, ref_dy)
+    return QPointF(anchor.x() + normal_x * perpendicular, anchor.y() + normal_y * perpendicular)
+
+
+def _draw_spine_guided_bridge(
+    painter: QPainter,
+    center_shoulder: QPointF,
+    shoulder_mid: QPointF,
+    spine_point: QPointF,
+    hip_center: QPointF,
+    hip_point: QPointF,
+) -> None:
+    top_break = _normal_offset_break(center_shoulder, spine_point, shoulder_mid, spine_point)
+    bottom_break = _normal_offset_break(spine_point, hip_center, hip_point, spine_point)
+    break_point = QPointF((top_break.x() + bottom_break.x()) / 2.0, (top_break.y() + bottom_break.y()) / 2.0)
+    painter.drawLine(shoulder_mid, break_point)
+    painter.drawLine(break_point, hip_point)
 
 
 def render_annotation_image(
@@ -78,7 +121,37 @@ def render_annotation_image(
             QPointF(end_state.x, end_state.y),
         )
 
+    active_spine_bridges: set[tuple[tuple[int, int], int]] = set()
+    left_hip = annotation.keypoints[13] if len(annotation.keypoints) > 13 else None
+    right_hip = annotation.keypoints[14] if len(annotation.keypoints) > 14 else None
+    hips_center = None
+    if left_hip and right_hip and left_hip.v > 0 and right_hip.v > 0:
+        hips_center = QPointF((left_hip.x + right_hip.x) / 2.0, (left_hip.y + right_hip.y) / 2.0)
+
+    for spine_index, (shoulder_inner, shoulder_outer), hip_index in skeleton.bridge_mid_connections:
+        if max(spine_index, shoulder_inner, shoulder_outer, hip_index) >= len(annotation.keypoints):
+            continue
+        spine_state = annotation.keypoints[spine_index]
+        inner_state = annotation.keypoints[shoulder_inner]
+        outer_state = annotation.keypoints[shoulder_outer]
+        hip_state = annotation.keypoints[hip_index]
+        if spine_state.v == 0 or inner_state.v == 0 or outer_state.v == 0 or hip_state.v == 0:
+            continue
+        painter.setPen(QPen(QColor("#7bdff2"), line_width))
+        shoulder_mid = _shoulder_midpoint(inner_state.x, inner_state.y, outer_state.x, outer_state.y)
+        _draw_spine_guided_bridge(
+            painter,
+            QPointF(inner_state.x, inner_state.y),
+            shoulder_mid,
+            QPointF(spine_state.x, spine_state.y),
+            hips_center or QPointF(hip_state.x, hip_state.y),
+            QPointF(hip_state.x, hip_state.y),
+        )
+        active_spine_bridges.add(((shoulder_inner, shoulder_outer), hip_index))
+
     for (shoulder_inner, shoulder_outer), hip_index in skeleton.bridge_connections:
+        if ((shoulder_inner, shoulder_outer), hip_index) in active_spine_bridges:
+            continue
         if max(shoulder_inner, shoulder_outer, hip_index) >= len(annotation.keypoints):
             continue
         inner_state = annotation.keypoints[shoulder_inner]
@@ -87,10 +160,7 @@ def render_annotation_image(
         if inner_state.v == 0 or outer_state.v == 0 or hip_state.v == 0:
             continue
         painter.setPen(QPen(QColor("#7bdff2"), line_width))
-        shoulder_mid = QPointF(
-            (inner_state.x + outer_state.x) / 2,
-            (inner_state.y + outer_state.y) / 2,
-        )
+        shoulder_mid = _shoulder_midpoint(inner_state.x, inner_state.y, outer_state.x, outer_state.y)
         painter.drawLine(shoulder_mid, QPointF(hip_state.x, hip_state.y))
 
     for name, state in zip(skeleton.keypoints, annotation.keypoints):

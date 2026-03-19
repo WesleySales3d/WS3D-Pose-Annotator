@@ -13,6 +13,7 @@ class SkeletonDefinition:
     keypoints: list[str]
     connections: list[tuple[int, int]]
     bridge_connections: list[tuple[tuple[int, int], int]] = field(default_factory=list)
+    bridge_mid_connections: list[tuple[int, tuple[int, int], int]] = field(default_factory=list)
     contact_keypoints: set[str] = field(default_factory=set)
 
     @property
@@ -43,7 +44,7 @@ POSE23 = SkeletonDefinition(
         "right_elbow",
         "left_wrist",
         "right_wrist",
-        "trunk_center",
+        "spine_center",
         "left_hip",
         "right_hip",
         "left_knee",
@@ -66,9 +67,6 @@ POSE23 = SkeletonDefinition(
         (8, 10),
         (7, 9),
         (9, 11),
-        (5, 12),
-        (12, 13),
-        (12, 14),
         (13, 14),
         (13, 15),
         (15, 17),
@@ -80,6 +78,14 @@ POSE23 = SkeletonDefinition(
         (18, 20),
         (18, 22),
         (20, 22),
+    ],
+    bridge_connections=[
+        ((5, 6), 13),
+        ((5, 7), 14),
+    ],
+    bridge_mid_connections=[
+        (12, (5, 6), 13),
+        (12, (5, 7), 14),
     ],
     contact_keypoints={"left_heel", "right_heel", "left_toe_center", "right_toe_center"},
 )

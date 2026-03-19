@@ -1,4 +1,4 @@
-"""Video metadata access and frame caching."""
+﻿"""Video metadata access and frame caching."""
 
 from __future__ import annotations
 
@@ -6,7 +6,8 @@ import shutil
 import tempfile
 from pathlib import Path
 
-from PySide6.QtGui import QImageReader
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QImageReader, QTransform
 
 from .ffmpeg_utils import FFmpegError, extract_frame, probe_video
 from .project_model import VideoMetadata
@@ -72,16 +73,24 @@ class VideoManager:
             if self.is_still_image:
                 self._render_image_to_cache(frame_path, image_format=image_format)
             else:
-                extract_frame(self.video_path, frame_index, self.metadata.fps, frame_path)
+                extract_frame(self.video_path, frame_index, self.metadata.fps, frame_path, metadata=self.metadata)
         return frame_path
 
     def _render_image_to_cache(self, destination: Path, image_format: str = "png") -> None:
         image = QImageReader(self.video_path).read()
         if image.isNull():
             raise FFmpegError("Não foi possível carregar a imagem selecionada.")
+        rotation = self.metadata.manual_rotation % 360
+        if rotation:
+            image = image.transformed(QTransform().rotate(rotation), Qt.TransformationMode.SmoothTransformation)
         destination.parent.mkdir(parents=True, exist_ok=True)
         if not image.save(str(destination), image_format.upper()):
             raise FFmpegError("Falha ao preparar a imagem para anotação.")
+
+    def clear_cache(self) -> None:
+        for child in self.cache_dir.glob('*'):
+            if child.is_file():
+                child.unlink(missing_ok=True)
 
     def prefetch_range(self, start_frame: int, end_frame: int, image_format: str = "png") -> None:
         """Reserved hook for future smarter prefetching."""

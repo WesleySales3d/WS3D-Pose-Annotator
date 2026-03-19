@@ -2,7 +2,7 @@
 
 Desktop app for manual 2D human pose annotation on videos and images, built with `Python 3.11+` and `PySide6`, with `FFmpeg/ffprobe` used for media probing, frame extraction, and rendered exports.
 
-Current release: `v1.2`  
+Current release: `v1.2.1`  
 Version source: [VERSION](VERSION)  
 Release notes: [CHANGELOG.md](CHANGELOG.md)
 
@@ -24,7 +24,7 @@ With one project you can:
 - Desktop-native workflow with `PySide6`
 - Multi-item projects with videos and still images together
 - Per-item export toggles and delete actions directly in the project list
-- FFmpeg-backed frame extraction and export pipeline
+- FFmpeg-backed frame extraction and export pipeline, with manual per-item correction for rotation/display-aspect when needed
 - Drag-and-drop keypoint creation from the keypoint list
 - Clickable timeline markers for annotated frames
 - Previous/next annotated-frame navigation
@@ -64,7 +64,7 @@ With one project you can:
 
 ### Keypoint management
 
-- POSE23 preset included with `center_shoulder` and optional `trunk_center`
+- POSE23 preset included with `center_shoulder` and optional `spine_center`
 - Left/right grouping by body category in the keypoint list
 - Visibility states:
   - `0`: absent
@@ -78,6 +78,10 @@ With one project you can:
 - Save and reopen multi-item annotation projects
 - Autosave support
 - Recent projects submenu
+- `Mídia > Corrigir item selecionado` para alinhar um vídeo específico à geometria de exibição do player
+- `Editar > Preferências` para ativar ou desativar o autosave manualmente e ajustar o intervalo
+- `spine_center` opcional funcionando como ponto de quebra/controle das guias do tronco
+- `Mídia > Girar 90°` e `Mídia > Girar 180°` para rotacionar somente o item selecionado mantendo as anotações no lugar
 - About dialog in `Ajuda > Sobre`
 - Export to:
   - COCO-style keypoints JSON for the whole project
@@ -230,6 +234,10 @@ E:\MONOCAP\src
 - App version is stored in [VERSION](VERSION)
 - Release history is maintained in [CHANGELOG.md](CHANGELOG.md)
 - UI title is generated from the version file automatically
+
+
+
+
 
 
 

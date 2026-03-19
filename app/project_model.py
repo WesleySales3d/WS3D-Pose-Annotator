@@ -9,6 +9,8 @@ from pathlib import Path
 
 from .annotation_model import FrameAnnotation, KeypointState
 
+PROJECT_SCHEMA_VERSION = 5
+
 
 def _migrate_center_shoulder(left: KeypointState, right: KeypointState) -> KeypointState:
     candidates = [state for state in (left, right) if state.v > 0]
@@ -69,6 +71,38 @@ def _migrate_pose23_item(item: "ProjectItemData") -> "ProjectItemData":
     return item
 
 
+def correct_shifted_arm_indices_annotation(annotation: FrameAnnotation) -> FrameAnnotation:
+    """Move arm keypoints back from a known bugged index shift."""
+
+    if len(annotation.keypoints) != 23:
+        return annotation.clone()
+    old = annotation.keypoints
+    corrected = [keypoint.clone() for keypoint in old]
+    corrected[7] = old[9].clone()
+    corrected[8] = old[10].clone()
+    corrected[9] = old[11].clone()
+    corrected[10] = old[12].clone()
+    corrected[11] = KeypointState()
+    corrected[12] = KeypointState()
+    return FrameAnnotation(
+        frame_index=annotation.frame_index,
+        timestamp=annotation.timestamp,
+        width=annotation.width,
+        height=annotation.height,
+        keypoints=corrected,
+    )
+
+
+def correct_shifted_arm_indices_item(item: "ProjectItemData") -> "ProjectItemData":
+    """Apply the known manual arm-index correction to every annotation of an item."""
+
+    item.annotations = {
+        frame_index: correct_shifted_arm_indices_annotation(annotation)
+        for frame_index, annotation in item.annotations.items()
+    }
+    return item
+
+
 @dataclass
 class VideoMetadata:
     """Metadata extracted from a media file."""
@@ -79,6 +113,10 @@ class VideoMetadata:
     fps: float
     duration: float
     total_frames: int
+    rotation: int = 0
+    sample_aspect_ratio: str = "1:1"
+    display_correction: bool = False
+    manual_rotation: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -88,6 +126,10 @@ class VideoMetadata:
             "fps": self.fps,
             "duration": self.duration,
             "total_frames": self.total_frames,
+            "rotation": self.rotation,
+            "sample_aspect_ratio": self.sample_aspect_ratio,
+            "display_correction": self.display_correction,
+            "manual_rotation": self.manual_rotation,
         }
 
     @classmethod
@@ -99,6 +141,10 @@ class VideoMetadata:
             fps=float(data["fps"]),
             duration=float(data["duration"]),
             total_frames=int(data["total_frames"]),
+            rotation=int(data.get("rotation", 0)),
+            sample_aspect_ratio=str(data.get("sample_aspect_ratio", "1:1")),
+            display_correction=bool(data.get("display_correction", False)),
+            manual_rotation=int(data.get("manual_rotation", 0)),
         )
 
 
@@ -187,14 +233,14 @@ class ProjectItemData:
 class ProjectData:
     """All persisted application state."""
 
-    version: int = 4
+    version: int = PROJECT_SCHEMA_VERSION
     skeleton_name: str = "POSE23"
     items: list[ProjectItemData] = field(default_factory=list)
     active_item_id: str | None = None
     ui_state: dict = field(default_factory=dict)
 
     def reset(self) -> None:
-        self.version = 4
+        self.version = PROJECT_SCHEMA_VERSION
         self.skeleton_name = "POSE23"
         self.items.clear()
         self.active_item_id = None
@@ -341,20 +387,20 @@ class ProjectData:
         if "items" in data:
             version = int(data.get("version", 2))
             project = cls(
-                version=version,
+                version=max(version, PROJECT_SCHEMA_VERSION),
                 skeleton_name=str(data.get("skeleton_name", "POSE23")),
                 active_item_id=data.get("active_item_id"),
                 ui_state=dict(data.get("ui_state", {})),
             )
             project.items = [ProjectItemData.from_dict(item_data) for item_data in data.get("items", [])]
-            if version < 4 and project.skeleton_name == "POSE23":
+            if project.skeleton_name == "POSE23" and version < 3:
                 project.items = [_migrate_pose23_item(item) for item in project.items]
             if not project.active_item_id and project.items:
                 project.active_item_id = project.items[0].item_id
             return project
 
         project = cls(
-            version=int(data.get("version", 1)),
+            version=max(int(data.get("version", 1)), PROJECT_SCHEMA_VERSION),
             skeleton_name=str(data.get("skeleton_name", "POSE23")),
             ui_state=dict(data.get("ui_state", {})),
         )
@@ -392,4 +438,3 @@ class ProjectData:
         project_path = Path(path)
         data = json.loads(project_path.read_text(encoding="utf-8"))
         return cls.from_dict(data)
-

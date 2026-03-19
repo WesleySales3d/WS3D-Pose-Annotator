@@ -101,6 +101,13 @@ class KeypointItem(QGraphicsObject):
         super().mouseReleaseEvent(event)
 
     def itemChange(self, change, value):
+        if change == QGraphicsItem.GraphicsItemChange.ItemPositionChange and self.scene() is not None:
+            position = value
+            if isinstance(position, QPointF):
+                rect = self.scene().sceneRect()
+                clamped_x = min(max(position.x(), rect.left()), rect.right())
+                clamped_y = min(max(position.y(), rect.top()), rect.bottom())
+                return QPointF(clamped_x, clamped_y)
         if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged and self.isVisible():
             position = self.pos()
             self.moved.emit(self.index, position.x(), position.y())

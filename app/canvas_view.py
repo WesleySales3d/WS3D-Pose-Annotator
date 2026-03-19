@@ -1,7 +1,8 @@
-﻿"""Annotation canvas based on QGraphicsView."""
+"""Annotation canvas based on QGraphicsView."""
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, QTimer, Qt, Signal
@@ -43,6 +44,9 @@ class AnnotationCanvas(QGraphicsView):
         self._keypoint_items: list[KeypointItem] = []
         self._line_items: list[tuple[tuple[int, int], QGraphicsLineItem]] = []
         self._bridge_line_items: list[tuple[tuple[tuple[int, int], int], QGraphicsLineItem]] = []
+        self._bridge_mid_line_items: list[
+            tuple[tuple[int, tuple[int, int], int], tuple[QGraphicsLineItem, QGraphicsLineItem]]
+        ] = []
         self._active_index = 0
         self._show_labels = True
         self._point_radius = DEFAULT_POINT_RADIUS
@@ -64,9 +68,13 @@ class AnnotationCanvas(QGraphicsView):
             self._scene.removeItem(line_item)
         for _, line_item in self._bridge_line_items:
             self._scene.removeItem(line_item)
+        for _, line_items in self._bridge_mid_line_items:
+            for line_item in line_items:
+                self._scene.removeItem(line_item)
         self._keypoint_items.clear()
         self._line_items.clear()
         self._bridge_line_items.clear()
+        self._bridge_mid_line_items.clear()
 
         for start, end in skeleton.connections:
             line_item = QGraphicsLineItem()
@@ -81,6 +89,17 @@ class AnnotationCanvas(QGraphicsView):
             line_item.setVisible(False)
             self._scene.addItem(line_item)
             self._bridge_line_items.append(((shoulder_pair, hip_index), line_item))
+
+        for spine_index, shoulder_pair, hip_index in skeleton.bridge_mid_connections:
+            upper_item = QGraphicsLineItem()
+            upper_item.setPen(QPen(QColor("#7bdff2"), self._line_width))
+            upper_item.setVisible(False)
+            lower_item = QGraphicsLineItem()
+            lower_item.setPen(QPen(QColor("#7bdff2"), self._line_width))
+            lower_item.setVisible(False)
+            self._scene.addItem(upper_item)
+            self._scene.addItem(lower_item)
+            self._bridge_mid_line_items.append(((spine_index, shoulder_pair, hip_index), (upper_item, lower_item)))
 
         for index, name in enumerate(skeleton.keypoints):
             item = KeypointItem(index=index, name=name, radius=self._effective_point_radius())
@@ -194,6 +213,11 @@ class AnnotationCanvas(QGraphicsView):
             pen = line_item.pen()
             pen.setWidthF(line_width)
             line_item.setPen(pen)
+        for _, line_items in self._bridge_mid_line_items:
+            for line_item in line_items:
+                pen = line_item.pen()
+                pen.setWidthF(line_width)
+                line_item.setPen(pen)
         self._update_lines()
 
     def set_layer_visibility(self, show_frame: bool, show_annotations: bool) -> None:
@@ -216,6 +240,97 @@ class AnnotationCanvas(QGraphicsView):
     def _on_item_selected(self, index: int) -> None:
         self.keypoint_selected.emit(index)
 
+    def _spine_bridge_is_active(self, shoulder_pair: tuple[int, int], hip_index: int) -> bool:
+        for (spine_index, current_shoulder_pair, current_hip_index), _ in self._bridge_mid_line_items:
+            if current_shoulder_pair != shoulder_pair or current_hip_index != hip_index:
+                continue
+            if max(spine_index, shoulder_pair[0], shoulder_pair[1], hip_index) >= len(self._keypoint_items):
+                continue
+            spine_item = self._keypoint_items[spine_index]
+            inner_item = self._keypoint_items[shoulder_pair[0]]
+            outer_item = self._keypoint_items[shoulder_pair[1]]
+            hip_item = self._keypoint_items[hip_index]
+            if spine_item.isVisible() and inner_item.isVisible() and outer_item.isVisible() and hip_item.isVisible():
+                return True
+        return False
+
+    def _center_hips_position(self) -> tuple[float, float] | None:
+        if len(self._keypoint_items) <= 14:
+            return None
+        left_hip = self._keypoint_items[13]
+        right_hip = self._keypoint_items[14]
+        if not left_hip.isVisible() or not right_hip.isVisible():
+            return None
+        return (
+            (left_hip.pos().x() + right_hip.pos().x()) / 2.0,
+            (left_hip.pos().y() + right_hip.pos().y()) / 2.0,
+        )
+
+    def _normal_offset_break(
+        self,
+        axis_start_x: float,
+        axis_start_y: float,
+        axis_end_x: float,
+        axis_end_y: float,
+        reference_x: float,
+        reference_y: float,
+        anchor_x: float,
+        anchor_y: float,
+    ) -> tuple[float, float]:
+        dx = axis_end_x - axis_start_x
+        dy = axis_end_y - axis_start_y
+        length = math.hypot(dx, dy)
+        if length <= 1e-6:
+            return anchor_x, anchor_y
+        dir_x = dx / length
+        dir_y = dy / length
+        normal_x = -dir_y
+        normal_y = dir_x
+        ref_dx = reference_x - axis_start_x
+        ref_dy = reference_y - axis_start_y
+        perpendicular = ref_dx * normal_x + ref_dy * normal_y
+        if abs(perpendicular) <= 1e-6:
+            perpendicular = math.hypot(ref_dx, ref_dy)
+        return anchor_x + normal_x * perpendicular, anchor_y + normal_y * perpendicular
+
+    def _compute_spine_break_point(
+        self,
+        center_shoulder_x: float,
+        center_shoulder_y: float,
+        shoulder_x: float,
+        shoulder_y: float,
+        spine_x: float,
+        spine_y: float,
+        hip_center_x: float,
+        hip_center_y: float,
+        hip_x: float,
+        hip_y: float,
+    ) -> tuple[float, float]:
+        top_break = self._normal_offset_break(
+            center_shoulder_x,
+            center_shoulder_y,
+            spine_x,
+            spine_y,
+            shoulder_x,
+            shoulder_y,
+            spine_x,
+            spine_y,
+        )
+        bottom_break = self._normal_offset_break(
+            spine_x,
+            spine_y,
+            hip_center_x,
+            hip_center_y,
+            hip_x,
+            hip_y,
+            spine_x,
+            spine_y,
+        )
+        return (
+            (top_break[0] + bottom_break[0]) / 2.0,
+            (top_break[1] + bottom_break[1]) / 2.0,
+        )
+
     def _update_lines(self) -> None:
         for (start, end), line_item in self._line_items:
             if start >= len(self._keypoint_items) or end >= len(self._keypoint_items):
@@ -231,6 +346,7 @@ class AnnotationCanvas(QGraphicsView):
                     end_item.pos().x(),
                     end_item.pos().y(),
                 )
+
         for ((shoulder_inner, shoulder_outer), hip_index), line_item in self._bridge_line_items:
             if max(shoulder_inner, shoulder_outer, hip_index) >= len(self._keypoint_items):
                 continue
@@ -242,17 +358,55 @@ class AnnotationCanvas(QGraphicsView):
                 and inner_item.isVisible()
                 and outer_item.isVisible()
                 and hip_item.isVisible()
+                and not self._spine_bridge_is_active((shoulder_inner, shoulder_outer), hip_index)
             )
             line_item.setVisible(visible)
             if visible:
-                shoulder_x = (inner_item.pos().x() + outer_item.pos().x()) / 2
-                shoulder_y = (inner_item.pos().y() + outer_item.pos().y()) / 2
+                shoulder_x = (inner_item.pos().x() + outer_item.pos().x()) / 2.0
+                shoulder_y = (inner_item.pos().y() + outer_item.pos().y()) / 2.0
                 line_item.setLine(
                     shoulder_x,
                     shoulder_y,
                     hip_item.pos().x(),
                     hip_item.pos().y(),
                 )
+
+        for (spine_index, (shoulder_inner, shoulder_outer), hip_index), (upper_item, lower_item) in self._bridge_mid_line_items:
+            if max(spine_index, shoulder_inner, shoulder_outer, hip_index) >= len(self._keypoint_items):
+                upper_item.setVisible(False)
+                lower_item.setVisible(False)
+                continue
+            spine_item = self._keypoint_items[spine_index]
+            inner_item = self._keypoint_items[shoulder_inner]
+            outer_item = self._keypoint_items[shoulder_outer]
+            hip_item = self._keypoint_items[hip_index]
+            visible = (
+                self._show_annotation_layer
+                and spine_item.isVisible()
+                and inner_item.isVisible()
+                and outer_item.isVisible()
+                and hip_item.isVisible()
+            )
+            upper_item.setVisible(visible)
+            lower_item.setVisible(visible)
+            if visible:
+                center_hips = self._center_hips_position() or (hip_item.pos().x(), hip_item.pos().y())
+                shoulder_x = (inner_item.pos().x() + outer_item.pos().x()) / 2.0
+                shoulder_y = (inner_item.pos().y() + outer_item.pos().y()) / 2.0
+                break_x, break_y = self._compute_spine_break_point(
+                    inner_item.pos().x(),
+                    inner_item.pos().y(),
+                    shoulder_x,
+                    shoulder_y,
+                    spine_item.pos().x(),
+                    spine_item.pos().y(),
+                    center_hips[0],
+                    center_hips[1],
+                    hip_item.pos().x(),
+                    hip_item.pos().y(),
+                )
+                upper_item.setLine(shoulder_x, shoulder_y, break_x, break_y)
+                lower_item.setLine(break_x, break_y, hip_item.pos().x(), hip_item.pos().y())
 
     def wheelEvent(self, event: QWheelEvent) -> None:
         zoom_factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15

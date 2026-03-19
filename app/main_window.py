@@ -43,10 +43,15 @@ from .canvas_view import AnnotationCanvas
 from .export_coco import export_coco_dataset
 from .export_simple_json import export_simple_json
 from .export_visuals import export_visual_sequence, render_annotation_image
-from .ffmpeg_utils import FFmpegError
+from .ffmpeg_utils import FFmpegError, probe_video
 from .history import HistoryEntry
 from .keypoint_table import KeypointTable
-from .project_model import ProjectData, ProjectItemData
+from .project_model import (
+    ProjectData,
+    ProjectItemData,
+    VideoMetadata,
+    correct_shifted_arm_indices_item,
+)
 from .settings import (
     APP_NAME,
     APP_TITLE,
@@ -238,6 +243,51 @@ class ExportVisualDialog(QDialog):
         )
 
 
+class PreferencesDialog(QDialog):
+    """Application preferences dialog."""
+
+    def __init__(self, autosave_enabled: bool, autosave_interval_ms: int, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Preferências")
+        self.resize(360, 180)
+
+        self.autosave_checkbox = QCheckBox("Ativar autosave")
+        self.autosave_checkbox.setChecked(autosave_enabled)
+
+        self.autosave_interval_spin = NoWheelSpinBox()
+        self.autosave_interval_spin.setRange(1, 120)
+        self.autosave_interval_spin.setSuffix(" min")
+        self.autosave_interval_spin.setValue(max(1, round(autosave_interval_ms / 60000)))
+        self.autosave_interval_spin.setEnabled(autosave_enabled)
+        self.autosave_checkbox.toggled.connect(self.autosave_interval_spin.setEnabled)
+
+        hint_label = QLabel("Quando ativado, o projeto atual é salvo automaticamente em um arquivo .autosave.")
+        hint_label.setWordWrap(True)
+        hint_label.setProperty("role", "muted")
+
+        form = QFormLayout()
+        form.addRow(self.autosave_checkbox)
+        form.addRow("Intervalo", self.autosave_interval_spin)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        cancel_button = QPushButton("Cancelar")
+        cancel_button.clicked.connect(self.reject)
+        ok_button = QPushButton("Salvar")
+        ok_button.clicked.connect(self.accept)
+        buttons.addWidget(cancel_button)
+        buttons.addWidget(ok_button)
+
+        root = QVBoxLayout(self)
+        root.addLayout(form)
+        root.addWidget(hint_label)
+        root.addStretch(1)
+        root.addLayout(buttons)
+
+    def values(self) -> tuple[bool, int]:
+        return self.autosave_checkbox.isChecked(), self.autosave_interval_spin.value() * 60_000
+
+
 class ProjectItemListRow(QWidget):
     """Visual row used in the project-items list."""
 
@@ -337,6 +387,9 @@ class MainWindow(QMainWindow):
         self._redo_history: list[HistoryEntry] = []
         self._pending_drag_history: tuple[dict[int, FrameAnnotation], int] | None = None
         self._recent_project_paths = self._load_recent_projects()
+        self._autosave_enabled = False
+        self._autosave_interval_ms = AUTOSAVE_INTERVAL_MS
+        self._load_preferences()
 
         self.play_timer = QTimer(self)
         self.play_timer.timeout.connect(self._advance_playback)
@@ -456,12 +509,6 @@ class MainWindow(QMainWindow):
         display_layout.addRow("Tamanho do ponto", self.point_radius_spin)
         display_layout.addRow("Espessura da linha", self.line_width_spin)
 
-        inspector_splitter = QSplitter(Qt.Orientation.Horizontal)
-        inspector_splitter.addWidget(inspector_box)
-        inspector_splitter.addWidget(display_box)
-        inspector_splitter.setStretchFactor(0, 5)
-        inspector_splitter.setStretchFactor(1, 1)
-
         actions_box = QGroupBox("Ações do frame")
         actions_layout = QGridLayout(actions_box)
         actions_layout.setContentsMargins(8, 8, 8, 8)
@@ -476,11 +523,23 @@ class MainWindow(QMainWindow):
         actions_layout.addWidget(self.interpolate_button, 1, 2)
         actions_layout.addWidget(self.undo_bulk_button, 1, 3)
 
+        right_controls = QWidget()
+        right_controls_layout = QVBoxLayout(right_controls)
+        right_controls_layout.setContentsMargins(0, 0, 0, 0)
+        right_controls_layout.addWidget(display_box)
+        right_controls_layout.addWidget(actions_box)
+        right_controls_layout.addStretch(1)
+
+        inspector_splitter = QSplitter(Qt.Orientation.Horizontal)
+        inspector_splitter.addWidget(inspector_box)
+        inspector_splitter.addWidget(right_controls)
+        inspector_splitter.setStretchFactor(0, 6)
+        inspector_splitter.setStretchFactor(1, 2)
+
         details_panel = QWidget()
         details_layout = QVBoxLayout(details_panel)
         details_layout.setContentsMargins(0, 0, 0, 0)
         details_layout.addWidget(inspector_splitter, 1)
-        details_layout.addWidget(actions_box)
 
         side_panel = QSplitter(Qt.Orientation.Vertical)
         side_panel.addWidget(items_box)
@@ -561,6 +620,7 @@ class MainWindow(QMainWindow):
 
     def _create_actions(self) -> None:
         file_menu = self.menuBar().addMenu("&Arquivo")
+        media_menu = self.menuBar().addMenu("&Mídia")
         edit_menu = self.menuBar().addMenu("&Editar")
         export_menu = self.menuBar().addMenu("&Exportar")
         help_menu = self.menuBar().addMenu("A&juda")
@@ -607,6 +667,18 @@ class MainWindow(QMainWindow):
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
 
+        self.correct_media_action = QAction("Corrigir item selecionado", self)
+        self.correct_media_action.triggered.connect(self._correct_selected_media_item)
+        media_menu.addAction(self.correct_media_action)
+
+        self.rotate_media_90_action = QAction("Girar 90°", self)
+        self.rotate_media_90_action.triggered.connect(lambda: self._rotate_selected_media_item(90))
+        media_menu.addAction(self.rotate_media_90_action)
+
+        self.rotate_media_180_action = QAction("Girar 180°", self)
+        self.rotate_media_180_action.triggered.connect(lambda: self._rotate_selected_media_item(180))
+        media_menu.addAction(self.rotate_media_180_action)
+
         self.export_coco_action = QAction("Exportar COCO", self)
         self.export_coco_action.triggered.connect(self.export_coco)
         export_menu.addAction(self.export_coco_action)
@@ -618,6 +690,15 @@ class MainWindow(QMainWindow):
         self.export_visual_action = QAction("Exportar Sequência/Vídeo", self)
         self.export_visual_action.triggered.connect(self.export_visual_preview)
         export_menu.addAction(self.export_visual_action)
+
+        self.preferences_action = QAction("Preferencias", self)
+        self.preferences_action.triggered.connect(self.open_preferences_dialog)
+        edit_menu.addAction(self.preferences_action)
+
+        self.correct_indices_action = QAction("Corrigir Indices errados", self)
+        self.correct_indices_action.triggered.connect(self._correct_shifted_indices_current_item)
+        edit_menu.addAction(self.correct_indices_action)
+        edit_menu.addSeparator()
 
         self.undo_bulk_action = QAction("Desfazer última ação em lote", self)
         self.undo_bulk_action.setShortcut(QKeySequence("Ctrl+Z"))
@@ -660,10 +741,48 @@ class MainWindow(QMainWindow):
     def _create_autosave(self) -> None:
         self.autosave_timer = QTimer(self)
         self.autosave_timer.timeout.connect(self._autosave)
-        self.autosave_timer.start(AUTOSAVE_INTERVAL_MS)
+        self._apply_autosave_preferences()
 
     def _settings(self) -> QSettings:
         return QSettings(APP_NAME, APP_NAME)
+
+    def _setting_bool(self, key: str, default: bool = False) -> bool:
+        value = self._settings().value(key, default)
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+    def _load_preferences(self) -> None:
+        settings = self._settings()
+        self._autosave_enabled = self._setting_bool("preferences/autosave_enabled", False)
+        try:
+            interval = int(settings.value("preferences/autosave_interval_ms", AUTOSAVE_INTERVAL_MS))
+        except (TypeError, ValueError):
+            interval = AUTOSAVE_INTERVAL_MS
+        self._autosave_interval_ms = max(60_000, interval)
+
+    def _save_preferences(self) -> None:
+        settings = self._settings()
+        settings.setValue("preferences/autosave_enabled", self._autosave_enabled)
+        settings.setValue("preferences/autosave_interval_ms", self._autosave_interval_ms)
+
+    def _apply_autosave_preferences(self) -> None:
+        if not hasattr(self, "autosave_timer"):
+            return
+        self.autosave_timer.stop()
+        if self._autosave_enabled:
+            self.autosave_timer.start(self._autosave_interval_ms)
+
+    def open_preferences_dialog(self) -> None:
+        dialog = PreferencesDialog(self._autosave_enabled, self._autosave_interval_ms, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._autosave_enabled, self._autosave_interval_ms = dialog.values()
+        self._save_preferences()
+        self._apply_autosave_preferences()
+        state = "ativado" if self._autosave_enabled else "desativado"
+        self.statusBar().showMessage(f"Preferências salvas. Autosave {state}.")
+
 
     def _load_recent_projects(self) -> list[str]:
         value = self._settings().value("recent_projects", [])
@@ -898,6 +1017,99 @@ class MainWindow(QMainWindow):
             item.media_metadata = manager.metadata
             item.cache_dir = str(manager.cache_dir)
 
+    def _clone_metadata(self, metadata: VideoMetadata) -> VideoMetadata:
+        return VideoMetadata.from_dict(metadata.to_dict())
+
+    def _rotated_dimensions(self, width: int, height: int, rotation_degrees: int) -> tuple[int, int]:
+        if rotation_degrees % 360 in (90, 270):
+            return height, width
+        return width, height
+
+    def _visual_rotation(self, metadata: VideoMetadata) -> int:
+        base_rotation = metadata.rotation if metadata.display_correction else 0
+        return (base_rotation + metadata.manual_rotation) % 360
+
+    def _transform_point_between_spaces(
+        self,
+        x: float,
+        y: float,
+        old_width: int,
+        old_height: int,
+        new_width: int,
+        new_height: int,
+        rotation_delta: int,
+    ) -> tuple[float, float]:
+        old_width = max(1, old_width)
+        old_height = max(1, old_height)
+        new_width = max(1, new_width)
+        new_height = max(1, new_height)
+        rotation_delta %= 360
+
+        if rotation_delta == 90:
+            rotated_x = float(old_height) - y
+            rotated_y = x
+            base_width, base_height = old_height, old_width
+        elif rotation_delta == 180:
+            rotated_x = float(old_width) - x
+            rotated_y = float(old_height) - y
+            base_width, base_height = old_width, old_height
+        elif rotation_delta == 270:
+            rotated_x = y
+            rotated_y = float(old_width) - x
+            base_width, base_height = old_height, old_width
+        else:
+            rotated_x = x
+            rotated_y = y
+            base_width, base_height = old_width, old_height
+
+        scaled_x = rotated_x * (new_width / max(1, base_width))
+        scaled_y = rotated_y * (new_height / max(1, base_height))
+        return (
+            max(0.0, min(float(new_width), scaled_x)),
+            max(0.0, min(float(new_height), scaled_y)),
+        )
+
+    def _transform_item_annotations(
+        self,
+        item: ProjectItemData,
+        new_width: int,
+        new_height: int,
+        rotation_delta: int,
+    ) -> None:
+        for annotation in item.annotations.values():
+            old_width = max(1, annotation.width)
+            old_height = max(1, annotation.height)
+            for keypoint in annotation.keypoints:
+                if keypoint.v <= 0:
+                    continue
+                keypoint.x, keypoint.y = self._transform_point_between_spaces(
+                    keypoint.x,
+                    keypoint.y,
+                    old_width,
+                    old_height,
+                    new_width,
+                    new_height,
+                    rotation_delta,
+                )
+            annotation.width = new_width
+            annotation.height = new_height
+
+    def _replace_item_manager(self, item: ProjectItemData, metadata: VideoMetadata, *, fit: bool = True) -> None:
+        item.media_metadata = metadata
+        manager = self.video_managers.get(item.item_id)
+        if manager is not None:
+            manager.clear_cache()
+        updated_manager = VideoManager(
+            video_path=item.media_path,
+            metadata=metadata,
+            cache_dir=item.cache_dir,
+        )
+        self.video_managers[item.item_id] = updated_manager
+        item.cache_dir = str(updated_manager.cache_dir)
+        if self.project.active_item_id == item.item_id:
+            self.video_manager = updated_manager
+            self._load_frame(self.current_frame_index, fit=fit)
+
     def _keypoint_display_order(self, skeleton) -> list[int]:
         preferred_names = [
             "nose",
@@ -912,7 +1124,7 @@ class MainWindow(QMainWindow):
             "right_elbow",
             "left_wrist",
             "right_wrist",
-            "trunk_center",
+            "spine_center",
             "left_hip",
             "right_hip",
             "left_knee",
@@ -1508,6 +1720,33 @@ class MainWindow(QMainWindow):
         self._set_dirty()
         self._push_history("Limpar frame", before_state)
 
+    def _correct_shifted_indices_current_item(self) -> None:
+        item = self.project.current_item
+        if item is None:
+            self.statusBar().showMessage("Nenhum item selecionado para corrigir.")
+            return
+        if self.project.skeleton_name != "POSE23":
+            self.statusBar().showMessage("A correcao de indices esta disponivel apenas para o preset POSE23.")
+            return
+        if not item.annotations:
+            self.statusBar().showMessage("O item selecionado nao possui frames anotados.")
+            return
+        before_state = self._snapshot_history_state()
+        correct_shifted_arm_indices_item(item)
+        self.current_annotation = self.project.get_annotation(self.current_frame_index) or self._make_empty_annotation(
+            self.current_frame_index
+        )
+        self.project.ui_state = self._capture_ui_state()
+        self.canvas.set_annotation(self.current_annotation)
+        self._refresh_keypoint_table()
+        self._update_timeline_markers()
+        self._update_project_items_summary()
+        self._set_dirty()
+        self._push_history("Corrigir Indices errados", before_state)
+        self.statusBar().showMessage(
+            f"Correcao de indices aplicada em {len(item.annotations)} frame(s) do item selecionado."
+        )
+
     def _copy_from_adjacent_frame(self, direction: int) -> None:
         if not self.project.video_metadata:
             return
@@ -1615,7 +1854,7 @@ class MainWindow(QMainWindow):
         return Path(tempfile.gettempdir()) / f"pose_video_annotator_unsaved{PROJECT_EXTENSION}"
 
     def _autosave(self) -> None:
-        if not self._dirty:
+        if not self._autosave_enabled or not self._dirty:
             return
         try:
             self.project.ui_state = self._capture_ui_state()
@@ -1850,6 +2089,72 @@ class MainWindow(QMainWindow):
             return
         self._load_project_file(file_path, confirm_discard=False)
 
+    def _rotate_selected_media_item(self, rotation_degrees: int) -> None:
+        item = self.project.current_item
+        if item is None or self.video_manager is None:
+            self._show_error("Girar mídia", "Selecione um item do projeto antes de girar.")
+            return
+        rotation_delta = rotation_degrees % 360
+        if rotation_delta == 0:
+            return
+        try:
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            updated_metadata = self._clone_metadata(item.media_metadata)
+            updated_metadata.manual_rotation = (updated_metadata.manual_rotation + rotation_delta) % 360
+            updated_metadata.width, updated_metadata.height = self._rotated_dimensions(
+                item.media_metadata.width,
+                item.media_metadata.height,
+                rotation_delta,
+            )
+            self._transform_item_annotations(
+                item,
+                updated_metadata.width,
+                updated_metadata.height,
+                rotation_delta,
+            )
+            self._replace_item_manager(item, updated_metadata, fit=True)
+            self._set_dirty()
+            self.statusBar().showMessage(f"Mídia girada em {rotation_delta}°: {item.name}")
+        except Exception as exc:
+            self._show_error("Girar mídia", str(exc))
+        finally:
+            QApplication.restoreOverrideCursor()
+
+    def _correct_selected_media_item(self) -> None:
+        item = self.project.current_item
+        if item is None or self.video_manager is None:
+            self._show_error("Corrigir mídia", "Selecione um item do projeto antes de corrigir.")
+            return
+        if item.media_kind != "video":
+            self.statusBar().showMessage("A correção de mídia é necessária apenas para vídeos.")
+            return
+        if item.media_metadata.display_correction:
+            self.statusBar().showMessage("O item selecionado já está com a correção aplicada.")
+            return
+        try:
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            current_metadata = item.media_metadata
+            corrected_metadata = probe_video(item.media_path, apply_display_correction=True)
+            corrected_metadata.manual_rotation = current_metadata.manual_rotation
+            corrected_metadata.width, corrected_metadata.height = self._rotated_dimensions(
+                corrected_metadata.width,
+                corrected_metadata.height,
+                corrected_metadata.manual_rotation,
+            )
+            rotation_delta = (self._visual_rotation(corrected_metadata) - self._visual_rotation(current_metadata)) % 360
+            self._transform_item_annotations(
+                item,
+                corrected_metadata.width,
+                corrected_metadata.height,
+                rotation_delta,
+            )
+            self._replace_item_manager(item, corrected_metadata, fit=True)
+            self._set_dirty()
+            self.statusBar().showMessage(f"Correção aplicada ao item: {item.name}")
+        except Exception as exc:
+            self._show_error("Corrigir mídia", str(exc))
+        finally:
+            QApplication.restoreOverrideCursor()
     def export_coco(self) -> None:
         if not self.project.items:
             self._show_error("Exportar COCO", "Importe mídias para o projeto antes de exportar.")
@@ -1862,8 +2167,9 @@ class MainWindow(QMainWindow):
             self._show_error("Exportar COCO", "Selecione uma pasta de saída.")
             return
         eligible_frames = any(
-            item.annotations if mode == "annotated" else item.visited_frames
+            (item.annotations if mode == "annotated" else item.visited_frames)
             for item in self.project.items
+            if item.include_in_export
         )
         if not eligible_frames:
             self._show_error("Exportar COCO", "Não há frames elegíveis para exportação.")
@@ -1962,6 +2268,19 @@ class MainWindow(QMainWindow):
         self._pause_video()
         self._cleanup_all_video_managers()
         event.accept()
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
